@@ -89,6 +89,57 @@
     label { font-size: 0.85rem; color: var(--muted); display: block; margin-bottom: 4px; }
     .field { margin-bottom: 12px; }
     .hidden { display: none !important; }
+    .map-tip {
+      position: fixed;
+      z-index: 50;
+      pointer-events: none;
+      max-width: 220px;
+      padding: 6px 9px;
+      font-size: 12px;
+      line-height: 1.35;
+      color: #dff3ff;
+      background: rgba(2, 12, 20, 0.95);
+      border: 1px solid var(--accent-dim);
+      border-radius: 6px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+    }
+    .map-tip .tip-title { font-weight: 600; color: var(--accent); }
+    .map-tip .tip-sub { color: #9fb6c4; }
+    header { position: relative; }
+    .help-btn {
+      position: absolute; top: 0; right: 0;
+      padding: 6px 12px; font-weight: 600;
+    }
+    .modal-overlay {
+      position: fixed; inset: 0; z-index: 100;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(0, 0, 0, 0.6); padding: 20px;
+    }
+    .modal {
+      background: #061622; border: 1px solid var(--accent-dim);
+      border-radius: 10px; width: 100%; max-width: 560px;
+      max-height: 85vh; display: flex; flex-direction: column;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+    }
+    .modal-head {
+      display: flex; align-items: center; gap: 10px;
+      padding: 14px 18px; border-bottom: 1px solid var(--accent-dim);
+    }
+    .modal-head h2 { margin: 0; flex: 1; font-size: 1.1rem; }
+    .modal-body { padding: 8px 18px 18px; overflow-y: auto; }
+    .help-section h3 {
+      margin: 16px 0 6px; font-size: 0.95rem; color: var(--accent);
+    }
+    .help-intro { color: var(--muted); font-size: 0.85rem; margin: 4px 0 0; }
+    .help-row {
+      display: flex; gap: 12px; align-items: baseline;
+      padding: 6px 0; border-bottom: 1px solid rgba(60, 204, 255, 0.08);
+    }
+    .help-glyph {
+      flex: 0 0 26px; text-align: center; font-size: 1.15rem;
+    }
+    .help-name { flex: 0 0 96px; font-weight: 600; font-size: 0.85rem; }
+    .help-desc { flex: 1; color: #b9cdd8; font-size: 0.82rem; line-height: 1.4; }
     .room-code {
       font-family: "SF Mono", Menlo, Consolas, monospace;
       font-size: 1.4rem;
@@ -171,12 +222,18 @@
       display: flex; flex-direction: column; align-items: center;
       justify-content: center; gap: 2px; cursor: pointer;
       font-size: 0.72rem; text-align: center; padding: 4px;
-      transition: border-color 0.15s, background 0.15s;
+      transition: border-color 0.15s, background 0.15s,
+                  box-shadow 0.15s, transform 0.15s;
     }
     .slot .idx { color: var(--muted); font-size: 0.62rem; }
     .slot.filled { border-style: solid; border-color: var(--accent); }
     .slot .glyph { font-size: 1.1rem; line-height: 1; }
     .slot.locked { opacity: 0.7; cursor: default; }
+    .slot.executing {
+      opacity: 1; border-style: solid; border-color: #ffd24a;
+      box-shadow: 0 0 14px #ffd24a, inset 0 0 8px rgba(255,210,74,0.35);
+      transform: scale(1.08);
+    }
     .palette { display: flex; flex-wrap: wrap; gap: 6px; }
     .card-btn {
       font-size: 0.74rem; padding: 6px 8px; line-height: 1.15;
@@ -192,9 +249,20 @@
   <header>
     <h1>Submarine Trench War</h1>
     <div class="subtitle">Phase 5 &mdash; hazards &amp; combat</div>
+    <button id="btnHelp" class="help-btn" title="How to play">? Help</button>
   </header>
 
   <main>
+    <div id="helpModal" class="modal-overlay hidden">
+      <div class="modal">
+        <div class="modal-head">
+          <h2>How to Play</h2>
+          <button id="btnHelpClose">Close</button>
+        </div>
+        <div class="modal-body" id="helpBody"></div>
+      </div>
+    </div>
+
     <div class="panel">
       <div class="status-row">
         <span class="dot" id="statusDot"></span>
@@ -245,6 +313,7 @@
     <div class="panel hidden" id="viewGame">
       <h2>Match In Progress <span id="roundTag" class="badge">Round 1</span></h2>
       <canvas id="board" width="600" height="360"></canvas>
+      <div id="mapTip" class="map-tip hidden"></div>
 
       <!-- Register programming -->
       <div id="program">
@@ -302,6 +371,7 @@
       anim: null,       // active replay animation, or null
       hand: [],         // my dealt cards this round: [{ id, kind }]
       timerEndsAt: null,// Ping Timer deadline (epoch ms), or null
+      pendingRound: null,// next-round setup buffered until a replay ends
     };
 
     // Card metadata: label + glyph for the UI.
@@ -332,14 +402,22 @@
       btnReady: $("btnReady"), btnStart: $("btnStart"), btnLeave: $("btnLeave"),
       gamePlayers: $("gamePlayers"), btnLeaveGame: $("btnLeaveGame"),
       homeToast: $("homeToast"), lobbyToast: $("lobbyToast"),
-      canvas: $("board"),
+      canvas: $("board"), mapTip: $("mapTip"),
       roundTag: $("roundTag"), lockTally: $("lockTally"),
       slots: $("slots"), palette: $("palette"),
       btnClear: $("btnClear"), btnLock: $("btnLock"),
       progToast: $("progToast"), program: $("program"),
       pingTimer: $("pingTimer"),
+      btnHelp: $("btnHelp"), btnHelpClose: $("btnHelpClose"),
+      helpModal: $("helpModal"), helpBody: $("helpBody"),
     };
     const ctx = el.canvas.getContext("2d");
+    // Pixel<->cell mapping from the latest board render, used for hover tooltips.
+    let boardMetrics = null;
+    // Timestamp of the previous animation frame, used to detect and absorb
+    // long freezes (backgrounded / occluded window) so a replay resumes rather
+    // than skipping ahead.
+    let lastFrameT = null;
 
     // --- logging --------------------------------------------------------
     function log(kind, text) {
@@ -367,7 +445,20 @@
       log("sys", `Connecting to ${wsUrl()} ...`);
       const ws = new WebSocket(wsUrl());
       state.ws = ws;
+      // Watchdog: if the socket doesn't finish connecting quickly, don't sit on
+      // the browser's ~1 min TCP timeout. Force it closed so we retry promptly.
+      // Skip this while the tab is hidden: background tabs are throttled by the
+      // browser (delayed handshake / onopen), which would look like a stall and
+      // trigger a needless disconnect loop.
+      let watchdog = setTimeout(() => {
+        if (ws.readyState === WebSocket.CONNECTING && !document.hidden) {
+          log("sys", "Connection stalled, retrying ...");
+          try { ws.close(); } catch (_) {}
+        }
+      }, 4000);
+      const clearWatchdog = () => { if (watchdog) { clearTimeout(watchdog); watchdog = null; } };
       ws.onopen = () => {
+        clearWatchdog();
         setConnected(true);
         const name = el.nameInput.value.trim()
           || localStorage.getItem(LS_NAME) || "Captain";
@@ -377,6 +468,7 @@
       ws.onmessage = (e) => onMessage(e.data);
       ws.onerror = () => log("err", "WebSocket error.");
       ws.onclose = () => {
+        clearWatchdog();
         setConnected(false);
         state.ws = null;
         log("sys", "Disconnected. Reconnecting in 1s ...");
@@ -408,6 +500,7 @@
         case "round_started": onRoundStarted(p); break;
         case "deal_hand": onDealHand(p); break;
         case "player_locked": onPlayerLocked(p); break;
+        case "program_restored": onProgramRestored(p); break;
         case "timer_started": onTimerStarted(p); break;
         case "registers_resolving": onRegistersResolving(p); break;
         case "round_result": onRoundResult(p); break;
@@ -420,14 +513,36 @@
     }
 
     function onWelcome(p) {
+      const prevId = state.playerId;
       state.playerId = p.player_id;
       state.token = p.session_token;
       localStorage.setItem(LS_TOKEN, state.token);
-      el.whoami.textContent =
-        `${el.nameInput.value.trim() || "Captain"} \u00b7 ${p.player_id}`;
+      updateWhoami();
       log("sys", `Welcome. player_id=${p.player_id}`);
+      // If we reconnected but the server handed us a *new* identity, the
+      // room/game we were showing is gone (server state was wiped or our
+      // session expired). Don't strand the player on a stale board.
+      if (prevId && prevId !== p.player_id && state.view !== "home") {
+        log("sys", "Session was replaced \u2014 returning home.");
+        resetToHome();
+      }
       // If the server puts us back in a room, a lobby_state/game_started
       // will follow and switch the view; otherwise we stay on home.
+    }
+
+    // Drop any in-game/lobby state and return to the home screen.
+    function resetToHome() {
+      state.roomCode = null;
+      state.isHost = false;
+      state.subs = [];
+      state.board = null;
+      state.lobby = null;
+      state.hand = [];
+      state.program = [];
+      state.locked = false;
+      state.anim = null;
+      state.pendingRound = null;
+      setView("home");
     }
 
     function onGameJoined(p) {
@@ -453,11 +568,24 @@
       if (p.board) state.board = p.board;
       if (p.submarines) state.subs = p.submarines;
       renderGamePlayers({ players: p.submarines });
+      updateWhoami();
       setView("game");
       log("sys", "Game started.");
     }
 
     function onRoundStarted(p) {
+      // While the previous round's replay is still animating, buffer the
+      // next-round reset so the locked cards stay visible in their slots
+      // until their actions have finished playing out.
+      if (state.anim) {
+        state.pendingRound = state.pendingRound || {};
+        state.pendingRound.started = p;
+        return;
+      }
+      applyRoundStarted(p);
+    }
+
+    function applyRoundStarted(p) {
       state.round = p.round || state.round;
       state.program = [];
       state.locked = false;
@@ -473,14 +601,57 @@
 
     function onDealHand(p) {
       if (p.player_id && p.player_id !== state.playerId) return;
+      if (state.anim) {
+        state.pendingRound = state.pendingRound || {};
+        state.pendingRound.deal = p;
+        return;
+      }
+      applyDealHand(p);
+    }
+
+    function applyDealHand(p) {
       state.hand = p.cards || [];
       renderPalette();
       renderSlots();
     }
 
+    // Apply any round setup that was buffered during a replay animation.
+    function flushPendingRound() {
+      const pr = state.pendingRound;
+      if (!pr) return;
+      state.pendingRound = null;
+      if (pr.started) applyRoundStarted(pr.started);
+      if (pr.deal) applyDealHand(pr.deal);
+    }
+
     function onPlayerLocked(p) {
       state.lockTally = { locked: p.locked, total: p.total };
       el.lockTally.textContent = `${p.locked} / ${p.total} locked`;
+    }
+
+    // Reconnected mid-round: the server still holds our submitted registers
+    // and lock status, so restore the slots + locked UI to match instead of
+    // showing a fresh, editable round.
+    function onProgramRestored(p) {
+      applyPendingIfAny();
+      state.program = (p.registers || []).filter(
+        (id) => state.hand.some((c) => c.id === id));
+      if (typeof p.locked_count === "number" && typeof p.total === "number") {
+        state.lockTally = { locked: p.locked_count, total: p.total };
+        el.lockTally.textContent = `${p.locked_count} / ${p.total} locked`;
+      }
+      if (p.locked) {
+        state.locked = true;
+        el.program.classList.add("locked");
+        el.progToast.textContent = "Locked. Waiting for the fleet\u2026";
+      }
+      renderSlots();
+    }
+
+    // If a replay is buffering the next round, flush it so restore applies to
+    // the live round rather than the buffered one.
+    function applyPendingIfAny() {
+      if (state.pendingRound) flushPendingRound();
     }
 
     function onTimerStarted(p) {
@@ -558,12 +729,21 @@
         // Don't clobber an in-flight replay; it sets subs at the end.
         if (!state.anim) state.subs = p.submarines;
         renderGamePlayers({ players: p.submarines });
+        updateWhoami();
       }
       el.roundTag.textContent = "Round " + state.round;
     }
 
     function onError(p) {
       log("err", `error[${p.code}] ${p.message}`);
+      // If we tried to act on a game the server no longer has us in, the
+      // board on screen is stale. Bail back home instead of hanging.
+      if (p.code === "not_in_game" && state.view !== "home") {
+        resetToHome();
+        el.homeToast.textContent = "That game is no longer available.";
+        setTimeout(() => { el.homeToast.textContent = ""; }, 4000);
+        return;
+      }
       const target = state.view === "home" ? el.homeToast : el.lobbyToast;
       target.textContent = p.message || p.code;
       setTimeout(() => { target.textContent = ""; }, 4000);
@@ -662,7 +842,8 @@
             `<span class="glyph">${meta.glyph}</span><span>${meta.label}</span>`;
           if (!state.locked) slot.addEventListener("click", () => removeCard(i));
         } else {
-          slot.innerHTML = `<span class="idx">${i + 1}</span><span>&middot;</span>`;
+          slot.innerHTML = `<span class="idx">${i + 1}</span>` +
+            `<span style="opacity:.4">hold</span>`;
         }
         el.slots.appendChild(slot);
       }
@@ -685,11 +866,15 @@
     }
 
     function updateLockButton() {
-      el.btnLock.disabled = state.locked || state.program.length !== REGISTERS;
+      el.btnLock.disabled = state.locked;
+      el.btnLock.textContent = "Lock In";
+      el.btnLock.title = state.program.length === 0
+        ? "No cards queued \u2014 lock in to pass (hold position this round)"
+        : "";
     }
 
     function lockRegisters() {
-      if (state.program.length !== REGISTERS || state.locked) return;
+      if (state.locked) return;
       send("program_registers", { registers: state.program.slice() });
       send("lock_registers", {});
       state.locked = true;
@@ -718,6 +903,7 @@
       const size = Math.floor(Math.min(cv.width / b.width, cv.height / b.height));
       const ox = Math.floor((cv.width - size * b.width) / 2);
       const oy = Math.floor((cv.height - size * b.height) / 2);
+      boardMetrics = { ox, oy, size, width: b.width, height: b.height };
 
       for (let y = 0; y < b.height; y++) {
         const row = b.grid[y] || "";
@@ -812,6 +998,19 @@
         g.fill();
         g.restore();
         return;
+      }
+
+      // pulsing highlight ring marks the player's own sub
+      if (s.player_id === state.playerId) {
+        const pulse = 0.5 + 0.5 * Math.sin(t / 300);
+        g.save();
+        g.globalAlpha = 0.35 + 0.4 * pulse;
+        g.strokeStyle = "#ffffff";
+        g.lineWidth = 2;
+        g.beginPath();
+        g.arc(cx, cy + bob, r * 1.45, 0, Math.PI * 2);
+        g.stroke();
+        g.restore();
       }
 
       // depth ring: dashed when deep, solid when shallow
@@ -932,7 +1131,13 @@
     const DIR_VEC = { N: [0, -1], E: [1, 0], S: [0, 1], W: [-1, 0] };
     const ROT_L = { N: "W", W: "S", S: "E", E: "N" };
     const ROT_R = { N: "E", E: "S", S: "W", W: "N" };
-    const PHASE_MS = 380;
+    const PHASE_MS = 1000;
+
+    // Ease-in-out so each register's motion accelerates then settles,
+    // giving the replay a deliberate, step-by-step feel.
+    function easeInOut(t) {
+      return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    }
 
     function isWall(x, y) {
       const b = state.board;
@@ -945,11 +1150,30 @@
       return state.subs.find((s) => s.player_id === state.playerId) || null;
     }
 
+    // Header identity: name + a colored dot matching the player's own sub.
+    function updateWhoami() {
+      const name = el.nameInput.value.trim() ||
+        localStorage.getItem(LS_NAME) || "Captain";
+      const me = mySub();
+      el.whoami.textContent = "";
+      if (me && me.color) {
+        const dot = document.createElement("span");
+        dot.style.cssText =
+          "display:inline-block;width:11px;height:11px;border-radius:50%;" +
+          `background:${me.color};box-shadow:0 0 6px ${me.color};` +
+          "margin-right:6px;vertical-align:middle";
+        el.whoami.appendChild(dot);
+        el.whoami.appendChild(document.createTextNode(name + " \u2014 your sub"));
+      } else {
+        el.whoami.textContent = name;
+      }
+    }
+
     // Predict my sub's path this round by applying my program locally.
     // Ignores other subs and currents (walls still block); preview only.
     function predictPath(sub, program) {
       let x = sub.x, y = sub.y, f = sub.facing;
-      const pts = [{ x, y }];
+      const pts = [{ x, y, f }];
       for (const kind of program) {
         if (kind === "port_bank") { f = ROT_L[f]; }
         else if (kind === "starboard_bank") { f = ROT_R[f]; }
@@ -963,7 +1187,7 @@
           }
         }
         // dive / surface / torpedo / depth_charge / sonar_ping: no movement
-        pts.push({ x, y });
+        pts.push({ x, y, f });
       }
       return pts;
     }
@@ -992,6 +1216,27 @@
         g.beginPath();
         g.arc(cx(p), cy(p), size * 0.1, 0, Math.PI * 2);
         g.fill();
+      });
+      // heading arrows show facing at each step, so turns are visible even
+      // when the sub stays on the same tile.
+      pts.forEach((p, i) => {
+        const ang = FACING_ANGLE[p.f] || 0;
+        g.save();
+        g.translate(cx(p), cy(p));
+        g.rotate(ang);
+        g.globalAlpha = 0.35 + 0.55 * (i / pts.length);
+        g.strokeStyle = (me.color || "#3cf");
+        g.lineWidth = 2;
+        const a = size * 0.22;
+        g.beginPath();
+        g.moveTo(-a * 0.6, 0);
+        g.lineTo(a * 0.6, 0);
+        g.moveTo(a * 0.6, 0);
+        g.lineTo(a * 0.2, -a * 0.4);
+        g.moveTo(a * 0.6, 0);
+        g.lineTo(a * 0.2, a * 0.4);
+        g.stroke();
+        g.restore();
       });
       g.restore();
     }
@@ -1032,11 +1277,13 @@
         state.subs = a.finalSubs || state.subs;
         state.anim = null;
         renderGamePlayers({ players: state.subs });
+        flushPendingRound();
         return state.subs;
       }
       const frac = (elapsed % PHASE_MS) / PHASE_MS;
       a.seg = seg;
       a.frac = frac;
+      const ef = easeInOut(frac);
       const from = indexById(a.frames[seg]);
       const to = indexById(a.frames[seg + 1]);
       const out = [];
@@ -1046,8 +1293,8 @@
         const half = frac < 0.5 ? aa : b;
         out.push({
           player_id: id,
-          x: aa.x + (b.x - aa.x) * frac,
-          y: aa.y + (b.y - aa.y) * frac,
+          x: aa.x + (b.x - aa.x) * ef,
+          y: aa.y + (b.y - aa.y) * ef,
           facing: half.facing,
           depth: half.depth,
           hull: half.hull,
@@ -1059,8 +1306,30 @@
     }
 
     function tick(t) {
-      if (state.view === "game") { renderBoard(t); updateTimer(); }
+      // If frames stalled (window backgrounded, occluded, or minimized) the
+      // browser pauses requestAnimationFrame. Absorb that gap into the replay
+      // clock so the animation resumes where it left off instead of jumping to
+      // the end and skipping the replay entirely.
+      if (lastFrameT !== null && state.anim && state.anim.t0 !== null) {
+        const gap = t - lastFrameT;
+        if (gap > 300) state.anim.t0 += gap;
+      }
+      lastFrameT = t;
+      if (state.view === "game") {
+        renderBoard(t);
+        updateTimer();
+        updateRegisterHighlight();
+      }
       requestAnimationFrame(tick);
+    }
+
+    // While a replay runs, glow the register slot currently being executed.
+    function updateRegisterHighlight() {
+      const kids = el.slots ? el.slots.children : [];
+      const active = state.anim ? state.anim.seg : -1;
+      for (let i = 0; i < kids.length; i++) {
+        kids[i].classList.toggle("executing", i === active);
+      }
     }
 
     function updateTimer() {
@@ -1107,6 +1376,138 @@
       renderSlots();
     });
     el.btnLock.addEventListener("click", lockRegisters);
+
+    // --- map hover tooltips --------------------------------------------
+    const FEATURE_TIP = {
+      "#": { title: "Trench wall", sub: "Solid rock \u2014 impassable." },
+      ".": { title: "Open trench", sub: "Clear water to move through." },
+      "S": { title: "Spawn point", sub: "Where a submarine starts." },
+      "D": { title: "Data node", sub: "Objective \u2014 sitting here collects intel." },
+      "X": { title: "Extraction zone", sub: "Escape here with your data to score." },
+      "M": { title: "Sea mine", sub: "Detonates on contact \u2014 steer clear or clear it." },
+      "V": { title: "Thermal vent", sub: "Forces a sub upward (Deep \u2192 Shallow)." },
+    };
+    const FACING_NAME = { N: "North", E: "East", S: "South", W: "West" };
+
+    function cellFromEvent(ev) {
+      if (!boardMetrics || !state.board) return null;
+      const rect = el.canvas.getBoundingClientRect();
+      const scaleX = el.canvas.width / rect.width;
+      const scaleY = el.canvas.height / rect.height;
+      const mx = (ev.clientX - rect.left) * scaleX;
+      const my = (ev.clientY - rect.top) * scaleY;
+      const { ox, oy, size, width, height } = boardMetrics;
+      const cx = Math.floor((mx - ox) / size);
+      const cy = Math.floor((my - oy) / size);
+      if (cx < 0 || cy < 0 || cx >= width || cy >= height) return null;
+      return { x: cx, y: cy };
+    }
+
+    function tipForCell(cell) {
+      const sub = (state.subs || []).find((s) => s.x === cell.x && s.y === cell.y);
+      if (sub) {
+        const name = (sub.display_name || "Submarine") +
+          (sub.player_id === state.playerId ? " (you)" : "");
+        if (sub.alive === false) {
+          return { title: name, sub: "Wreck \u2014 destroyed." };
+        }
+        const bits = [];
+        if (typeof sub.hull === "number") bits.push("Hull " + sub.hull);
+        if (sub.depth) bits.push(sub.depth === "deep" ? "Deep" : "Shallow");
+        if (sub.facing) bits.push("Facing " + (FACING_NAME[sub.facing] || sub.facing));
+        return { title: name, sub: bits.join(" \u00b7 ") };
+      }
+      const b = state.board;
+      const row = b.grid[cell.y] || "";
+      const ch = row[cell.x] || "#";
+      return FEATURE_TIP[ch] || null;
+    }
+
+    function showMapTip(ev) {
+      const cell = cellFromEvent(ev);
+      const tip = cell ? tipForCell(cell) : null;
+      if (!tip) { el.mapTip.classList.add("hidden"); return; }
+      el.mapTip.innerHTML =
+        `<div class="tip-title">${tip.title}</div>` +
+        (tip.sub ? `<div class="tip-sub">${tip.sub}</div>` : "");
+      el.mapTip.classList.remove("hidden");
+      el.mapTip.style.left = (ev.clientX + 14) + "px";
+      el.mapTip.style.top = (ev.clientY + 14) + "px";
+    }
+
+    el.canvas.addEventListener("mousemove", showMapTip);
+    el.canvas.addEventListener("mouseleave", () => el.mapTip.classList.add("hidden"));
+
+    // --- help window ----------------------------------------------------
+    const CARD_HELP = [
+      ["ahead_standard", "Move forward 1 tile along your current heading."],
+      ["ahead_flank", "Move forward 2 tiles \u2014 fast, but hard to stop."],
+      ["reverse", "Move backward 1 tile without turning."],
+      ["port_bank", "Rotate 90\u00b0 to port (left). No movement."],
+      ["starboard_bank", "Rotate 90\u00b0 to starboard (right). No movement."],
+      ["dive", "Go deep. Deep subs dodge torpedoes, but not depth charges."],
+      ["surface", "Rise to shallow depth."],
+      ["torpedo", "Fire straight ahead (2 damage). Only hits enemies at your depth; stops at walls."],
+      ["depth_charge", "Arm a charge that detonates next register on your tile (3 damage), hitting any depth."],
+      ["sonar_ping", "Ping straight ahead (1 damage). Hits any depth and reveals a struck enemy's cards."],
+    ];
+    const ITEM_HELP = [
+      ["#", "\u25a9", "#7fa8c0"],
+      [".", "\u00b7", "#4a7186"],
+      ["S", "\u2b1a", "#3cf"],
+      ["D", "\u25c6", "#3ccfff"],
+      ["X", "\u25a2", "#4caf50"],
+      ["M", "\u2739", "#e05555"],
+      ["V", "\u203f", "#ff8c3c"],
+    ];
+
+    function buildHelp() {
+      if (el.helpBody.dataset.built) return;
+      const cards = CARD_HELP.map(([kind, desc]) => {
+        const m = CARD_META[kind] || { label: kind, glyph: "?" };
+        return `<div class="help-row"><div class="help-glyph">${m.glyph}</div>` +
+          `<div class="help-name">${m.label}</div>` +
+          `<div class="help-desc">${desc}</div></div>`;
+      }).join("");
+      const items = ITEM_HELP.map(([ch, glyph, color]) => {
+        const f = FEATURE_TIP[ch];
+        return `<div class="help-row">` +
+          `<div class="help-glyph" style="color:${color}">${glyph}</div>` +
+          `<div class="help-name">${f.title}</div>` +
+          `<div class="help-desc">${f.sub}</div></div>`;
+      }).join("");
+      el.helpBody.innerHTML =
+        `<div class="help-section"><p class="help-intro">Each round, queue up to 5 ` +
+        `cards into your registers, then Lock In. All fleets' cards execute in ` +
+        `register order. Locking in with no cards holds position (a pass).</p></div>` +
+        `<div class="help-section"><h3>Cards</h3>${cards}</div>` +
+        `<div class="help-section"><h3>Map items</h3>${items}</div>`;
+      el.helpBody.dataset.built = "1";
+    }
+
+    function openHelp() { buildHelp(); el.helpModal.classList.remove("hidden"); }
+    function closeHelp() { el.helpModal.classList.add("hidden"); }
+
+    el.btnHelp.addEventListener("click", openHelp);
+    el.btnHelpClose.addEventListener("click", closeHelp);
+    el.helpModal.addEventListener("click", (ev) => {
+      if (ev.target === el.helpModal) closeHelp();
+    });
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && !el.helpModal.classList.contains("hidden")) closeHelp();
+    });
+
+
+    // When the tab becomes visible again: if the socket got stuck CONNECTING
+    // while throttled in the background, close it so the reconnect loop retries
+    // promptly instead of hanging. (Replay timing is handled by the pause-aware
+    // clock in tick(), so no animation reset is needed here.)
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) return;
+      if (state.ws && state.ws.readyState === WebSocket.CONNECTING) {
+        try { state.ws.close(); } catch (_) {}
+      }
+    });
 
     function leaveRoom() {
       send("leave_game", {});

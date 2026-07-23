@@ -42,6 +42,7 @@
     round = 0 :: non_neg_integer(),
     hands = #{} :: #{binary() => [map()]},
     programs = #{} :: #{binary() => [binary()]},
+    submitted = #{} :: #{binary() => [binary()]},
     locked = [] :: [binary()],
     timer_ref :: reference() | undefined,
     timer_ends :: integer() | undefined
@@ -124,6 +125,7 @@ handle_call({reconnect, PlayerId, WsPid}, _From, S) ->
                     push(WsPid, <<"game_state">>, game_state_payload(S1)),
                     push(WsPid, <<"round_started">>, round_started_payload(S1)),
                     push_hand(S1, PlayerId),
+                    maybe_restore_program(S1, PlayerId, WsPid),
                     maybe_push_timer(S1, WsPid);
                 lobby ->
                     ok
@@ -148,6 +150,7 @@ handle_call({start_game, PlayerId}, _From, S) ->
         true ->
             S1 = S#state{phase = playing, subs = place_subs(S),
                          round = 1, programs = #{}, locked = [],
+                         submitted = #{},
                          timer_ref = undefined, timer_ends = undefined},
             broadcast(S1, <<"game_started">>, game_started_payload(S1)),
             S2 = deal_and_announce(S1),
@@ -158,7 +161,8 @@ handle_call({start_game, PlayerId}, _From, S) ->
 handle_call({program, PlayerId, Cards}, _From, S) ->
     case validate_program(PlayerId, Cards, S) of
         {ok, Kinds} ->
-            S1 = S#state{programs = maps:put(PlayerId, Kinds, S#state.programs)},
+            S1 = S#state{programs = maps:put(PlayerId, Kinds, S#state.programs),
+                         submitted = maps:put(PlayerId, Cards, S#state.submitted)},
             {reply, ok, S1};
         {error, _} = Err ->
             {reply, Err, S}
@@ -394,6 +398,23 @@ push_hand(S, PlayerId) ->
     push(WsPid, <<"deal_hand">>,
          deal_hand_payload(S#state.round, PlayerId, Hand)).
 
+%% After a mid-round reconnect, restore the player's own register slots and
+%% locked status so the client UI matches the authoritative server state --
+%% round_started on its own would leave the client looking freshly unlocked.
+maybe_restore_program(S, PlayerId, WsPid) ->
+    Submitted = maps:get(PlayerId, S#state.submitted, []),
+    Locked = lists:member(PlayerId, S#state.locked),
+    case Submitted =:= [] andalso not Locked of
+        true ->
+            ok;
+        false ->
+            push(WsPid, <<"program_restored">>,
+                 #{<<"registers">> => Submitted,
+                   <<"locked">> => Locked,
+                   <<"locked_count">> => length(S#state.locked),
+                   <<"total">> => length(seated_ids(S))})
+    end.
+
 %% Validate 5 distinct card IDs from the player's current hand and map them
 %% to the ordered list of card kinds the engine consumes.
 validate_program(PlayerId, Ids, S) ->
@@ -401,12 +422,22 @@ validate_program(PlayerId, Ids, S) ->
     Seated = maps:is_key(PlayerId, S#state.subs),
     Hand = maps:get(PlayerId, S#state.hands, []),
     Distinct = length(lists:usort(Ids)) =:= length(Ids),
+    TooMany = length(Ids) > ?REGISTERS,
     if
         not IsPlaying -> {error, not_in_game};
         not Seated -> {error, not_in_game};
-        length(Ids) =/= ?REGISTERS -> {error, invalid_register};
+        TooMany -> {error, invalid_register};
         not Distinct -> {error, invalid_register};
-        true -> map_ids_to_kinds(Ids, Hand)
+        true ->
+            %% Fewer than 5 cards is allowed: any unfilled register defaults
+            %% to a "hold" (do nothing), so a player short on useful cards can
+            %% still lock in.
+            case map_ids_to_kinds(Ids, Hand) of
+                {ok, Kinds} ->
+                    Pad = lists:duplicate(?REGISTERS - length(Kinds), <<"hold">>),
+                    {ok, Kinds ++ Pad};
+                Err -> Err
+            end
     end.
 
 map_ids_to_kinds(Ids, Hand) ->
@@ -458,7 +489,7 @@ resolve_round(S, AutoFilled) ->
     reveal_sonar_hits(S0, Phases),
     %% Advance to the next round: fresh hands, clear programs/locks/timer.
     S2 = S1#state{round = S1#state.round + 1,
-                  programs = #{}, locked = [],
+                  programs = #{}, locked = [], submitted = #{},
                   timer_ref = undefined, timer_ends = undefined},
     deal_and_announce(S2).
 

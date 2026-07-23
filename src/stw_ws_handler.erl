@@ -20,6 +20,11 @@
 -export([decode/1]).
 
 -define(IDLE_TIMEOUT, 60000).
+%% Send a keepalive ping well within the idle timeout. Turns can take a long
+%% time (players plan their moves), during which the client sends nothing; the
+%% browser auto-replies to these pings at the protocol level (even in a
+%% backgrounded tab), which resets Cowboy's idle timer and keeps the socket up.
+-define(PING_INTERVAL, 25000).
 
 init(Req, State) ->
     Opts = #{idle_timeout => ?IDLE_TIMEOUT},
@@ -33,6 +38,7 @@ websocket_init(State) ->
     %%   display_name - chosen name
     %%   game         - pid of the joined game (or undefined)
     %%   room_code    - current room code (or undefined)
+    schedule_ping(),
     {[], State#{seq => 0,
                 player_id => undefined,
                 token => undefined,
@@ -51,15 +57,25 @@ websocket_handle({text, Data}, State) ->
 websocket_handle({ping, _}, State) ->
     %% Respond to protocol-level WebSocket pings automatically.
     {[], State};
+websocket_handle({pong, _}, State) ->
+    %% Client's reply to our keepalive ping; nothing to do.
+    {[], State};
 websocket_handle(_Frame, State) ->
     {[], State}.
 
 %% Game/lobby processes deliver server->client messages as {push, Type,
 %% Payload}; we stamp the envelope (seq/ts) here and send it as a frame.
+websocket_info(keepalive, State) ->
+    %% Emit a keepalive ping and schedule the next one.
+    schedule_ping(),
+    {[{ping, <<>>}], State};
 websocket_info({push, Type, Payload}, State) ->
     reply(envelope(Type, Payload), State);
 websocket_info(_Info, State) ->
     {[], State}.
+
+schedule_ping() ->
+    erlang:send_after(?PING_INTERVAL, self(), keepalive).
 
 %% --- internal ---------------------------------------------------------
 
