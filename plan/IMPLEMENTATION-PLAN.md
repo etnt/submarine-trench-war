@@ -64,13 +64,13 @@ Goal: define the message contract and player/session lifecycle.
 
 Goal: represent the trench map and submarine state on the server.
 
-* [ ] Define the grid/tile model (walls, open trench, depth layers).
-* [ ] Tile attributes: mines, thermal vents, data nodes, extraction zone.
-* [ ] Submarine state: position, facing, depth, hull, data collected.
-* [ ] Author a first static map (hand-designed narrow trench with forks).
-* [ ] Serialize board + submarine state to the client (full view for now).
-* [ ] Client: render the grid, walls, and submarines on the canvas.
-* [ ] Client: render submarine facing and depth (visual distinction).
+* [x] Define the grid/tile model (walls, open trench, depth layers).
+* [x] Tile attributes: mines, thermal vents, data nodes, extraction zone.
+* [x] Submarine state: position, facing, depth, hull, data collected.
+* [x] Author a first static map (hand-designed narrow trench with forks).
+* [x] Serialize board + submarine state to the client (full view for now).
+* [x] Client: render the grid, walls, and submarines on the canvas.
+* [x] Client: render submarine facing and depth (visual distinction).
 
 **Milestone:** Server holds a board; all clients render it identically.
 

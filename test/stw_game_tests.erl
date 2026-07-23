@@ -83,7 +83,17 @@ host_starts_game() ->
     ?assertEqual({error, not_host}, stw_game:start_game(GamePid, P2)),
     ok = stw_game:start_game(GamePid, P1),
     GS = expect_push(<<"game_started">>),
-    ?assertEqual(2, length(maps:get(<<"players">>, GS))).
+    Subs = maps:get(<<"submarines">>, GS),
+    ?assertEqual(2, length(Subs)),
+    Board = maps:get(<<"board">>, GS),
+    ?assertEqual(20, maps:get(<<"width">>, Board)),
+    %% each submarine is placed on a real coordinate with a full hull
+    [begin
+         ?assert(is_integer(maps:get(<<"x">>, Sub))),
+         ?assert(is_integer(maps:get(<<"y">>, Sub))),
+         ?assertEqual(10, maps:get(<<"hull">>, Sub)),
+         ?assertEqual(<<"shallow">>, maps:get(<<"depth">>, Sub))
+     end || Sub <- Subs].
 
 %% --- helpers ----------------------------------------------------------
 

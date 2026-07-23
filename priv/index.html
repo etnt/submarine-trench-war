@@ -117,6 +117,16 @@
     .badge.offline { background: #444; color: #aaa; }
     .pname { flex: 1; }
     .swatch { width: 12px; height: 12px; border-radius: 3px; }
+    canvas#board {
+      width: 100%;
+      height: auto;
+      display: block;
+      background: #02090f;
+      border: 1px solid var(--accent-dim);
+      border-radius: 8px;
+      image-rendering: auto;
+      margin-bottom: 12px;
+    }
     #log {
       font-family: "SF Mono", Menlo, Consolas, monospace;
       font-size: 0.74rem;
@@ -143,7 +153,7 @@
 <body>
   <header>
     <h1>Submarine Trench War</h1>
-    <div class="subtitle">Phase 1 &mdash; lobby &amp; sessions</div>
+    <div class="subtitle">Phase 2 &mdash; board &amp; submarines</div>
   </header>
 
   <main>
@@ -193,10 +203,11 @@
       <div class="toast" id="lobbyToast"></div>
     </div>
 
-    <!-- GAME placeholder -->
+    <!-- GAME: board + fleet -->
     <div class="panel hidden" id="viewGame">
       <h2>Match In Progress</h2>
-      <p class="subtitle">The board and programming UI arrive in Phase 2-3.</p>
+      <canvas id="board" width="600" height="360"></canvas>
+      <p class="subtitle">Programming UI arrives in Phase 3.</p>
       <ul class="players" id="gamePlayers"></ul>
       <div class="controls" style="margin-top: 12px;">
         <button id="btnLeaveGame">Leave Match</button>
@@ -225,6 +236,8 @@
       isHost: false,
       view: "home",     // home | lobby | game
       lobby: null,      // last lobby_state payload
+      board: null,      // { width, height, grid, legend }
+      subs: [],         // [{ player_id, color, x, y, facing, depth, hull, ... }]
     };
 
     const $ = (id) => document.getElementById(id);
@@ -238,7 +251,9 @@
       btnReady: $("btnReady"), btnStart: $("btnStart"), btnLeave: $("btnLeave"),
       gamePlayers: $("gamePlayers"), btnLeaveGame: $("btnLeaveGame"),
       homeToast: $("homeToast"), lobbyToast: $("lobbyToast"),
+      canvas: $("board"),
     };
+    const ctx = el.canvas.getContext("2d");
 
     // --- logging --------------------------------------------------------
     function log(kind, text) {
@@ -333,13 +348,17 @@
       state.lobby = p;
       state.roomCode = p.room_code;
       state.isHost = (p.host_id === state.playerId);
-      if (p.phase === "playing") { renderGamePlayers(p); setView("game"); }
-      else { renderLobby(p); if (state.view !== "lobby") setView("lobby"); }
+      if (p.phase === "playing") {
+        renderGamePlayers({ players: state.subs.length ? state.subs : p.players });
+        setView("game");
+      } else { renderLobby(p); if (state.view !== "lobby") setView("lobby"); }
     }
 
     function onGameStarted(p) {
       state.roomCode = p.room_code;
-      renderGamePlayers({ players: p.players });
+      if (p.board) state.board = p.board;
+      if (p.submarines) state.subs = p.submarines;
+      renderGamePlayers({ players: p.submarines });
       setView("game");
       log("sys", "Game started.");
     }
@@ -401,8 +420,134 @@
         name.className = "pname";
         name.textContent = pl.display_name || pl.player_id;
         li.appendChild(name);
+        if (typeof pl.depth === "string") li.appendChild(badge("", pl.depth));
+        if (typeof pl.hull === "number") li.appendChild(badge("", "hull " + pl.hull));
         el.gamePlayers.appendChild(li);
       });
+    }
+
+    // --- board rendering -----------------------------------------------
+    const TILE = {
+      "#": { fill: "#0a2233" },   // wall
+      ".": { fill: "#04161f" },   // trench
+      "S": { fill: "#062a38" },   // spawn
+      "D": { fill: "#04161f" },   // data node
+      "X": { fill: "#04161f" },   // extraction
+      "M": { fill: "#04161f" },   // mine
+      "V": { fill: "#04161f" },   // vent
+    };
+    const FACING_ANGLE = { N: -Math.PI / 2, E: 0, S: Math.PI / 2, W: Math.PI };
+
+    function renderBoard(t) {
+      const b = state.board;
+      const cv = el.canvas, g = ctx;
+      g.clearRect(0, 0, cv.width, cv.height);
+      if (!b || !b.grid) return;
+      const size = Math.floor(Math.min(cv.width / b.width, cv.height / b.height));
+      const ox = Math.floor((cv.width - size * b.width) / 2);
+      const oy = Math.floor((cv.height - size * b.height) / 2);
+
+      for (let y = 0; y < b.height; y++) {
+        const row = b.grid[y] || "";
+        for (let x = 0; x < b.width; x++) {
+          const ch = row[x] || "#";
+          const px = ox + x * size, py = oy + y * size;
+          g.fillStyle = (TILE[ch] || TILE["."]).fill;
+          g.fillRect(px, py, size, size);
+          g.strokeStyle = "rgba(60,204,255,0.05)";
+          g.strokeRect(px + 0.5, py + 0.5, size, size);
+          drawFeature(g, ch, px, py, size, t);
+        }
+      }
+      state.subs.forEach((s) => drawSub(g, s, ox, oy, size, t));
+    }
+
+    function drawFeature(g, ch, px, py, size, t) {
+      const cx = px + size / 2, cy = py + size / 2, r = size * 0.28;
+      const pulse = 0.6 + 0.4 * Math.sin(t / 400);
+      if (ch === "D") {              // data node: cyan diamond
+        g.save();
+        g.translate(cx, cy);
+        g.rotate(Math.PI / 4);
+        g.fillStyle = `rgba(60,204,255,${0.55 * pulse + 0.3})`;
+        g.fillRect(-r, -r, r * 2, r * 2);
+        g.restore();
+      } else if (ch === "X") {       // extraction: green target
+        g.strokeStyle = "#4caf50";
+        g.lineWidth = 2;
+        g.strokeRect(px + size * 0.2, py + size * 0.2, size * 0.6, size * 0.6);
+        g.beginPath();
+        g.arc(cx, cy, r * 0.6, 0, Math.PI * 2);
+        g.stroke();
+      } else if (ch === "M") {       // mine: red spiky dot
+        g.fillStyle = "#e05555";
+        g.beginPath();
+        g.arc(cx, cy, r * 0.5, 0, Math.PI * 2);
+        g.fill();
+        g.strokeStyle = "#e05555";
+        for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
+          g.beginPath();
+          g.moveTo(cx + Math.cos(a) * r * 0.5, cy + Math.sin(a) * r * 0.5);
+          g.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+          g.stroke();
+        }
+      } else if (ch === "V") {       // vent: orange rising chevrons
+        g.strokeStyle = `rgba(255,140,60,${0.5 + 0.5 * pulse})`;
+        g.lineWidth = 2;
+        for (let i = 0; i < 2; i++) {
+          const yy = cy + r * 0.5 - i * r * 0.8;
+          g.beginPath();
+          g.moveTo(cx - r * 0.5, yy);
+          g.lineTo(cx, yy - r * 0.5);
+          g.lineTo(cx + r * 0.5, yy);
+          g.stroke();
+        }
+      } else if (ch === "S") {       // spawn: faint dashed marker
+        g.strokeStyle = "rgba(60,204,255,0.25)";
+        g.setLineDash([3, 3]);
+        g.strokeRect(px + size * 0.25, py + size * 0.25, size * 0.5, size * 0.5);
+        g.setLineDash([]);
+      }
+    }
+
+    function drawSub(g, s, ox, oy, size, t) {
+      const cx = ox + s.x * size + size / 2;
+      const cy = oy + s.y * size + size / 2;
+      const bob = Math.sin(t / 500 + s.x + s.y) * size * 0.04;
+      const r = size * 0.34;
+      const angle = FACING_ANGLE[s.facing] || 0;
+      const deep = s.depth === "deep";
+
+      // depth ring: dashed when deep, solid when shallow
+      g.strokeStyle = s.color || "#3cf";
+      g.lineWidth = 2;
+      g.globalAlpha = deep ? 0.5 : 0.9;
+      g.setLineDash(deep ? [3, 3] : []);
+      g.beginPath();
+      g.arc(cx, cy + bob, r * 1.15, 0, Math.PI * 2);
+      g.stroke();
+      g.setLineDash([]);
+      g.globalAlpha = 1;
+
+      // hull body as a facing triangle
+      g.save();
+      g.translate(cx, cy + bob);
+      g.rotate(angle);
+      g.fillStyle = s.color || "#3cf";
+      g.globalAlpha = deep ? 0.65 : 1;
+      g.beginPath();
+      g.moveTo(r, 0);
+      g.lineTo(-r * 0.7, -r * 0.6);
+      g.lineTo(-r * 0.7, r * 0.6);
+      g.closePath();
+      g.fill();
+      g.restore();
+      g.globalAlpha = 1;
+    }
+
+    function tick(t) {
+      if (state.view === "game") renderBoard(t);
+      requestAnimationFrame(tick);
     }
 
     function badge(cls, text) {
@@ -439,6 +584,7 @@
     function leaveRoom() {
       send("leave_game", {});
       state.roomCode = null; state.isHost = false; state.lobby = null;
+      state.board = null; state.subs = [];
       setView("home");
     }
 
@@ -452,6 +598,7 @@
     setView("home");
     log("sys", "Ready.");
     connect();
+    requestAnimationFrame(tick);
   </script>
 </body>
 </html>

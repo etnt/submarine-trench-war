@@ -230,31 +230,58 @@ Broadcast whenever lobby membership or readiness changes.
 ```
 
 ### `game_started`
-Signals transition from lobby to match. Includes the static board.
+Signals transition from lobby to match. Carries the static board and the
+initial submarine placements. Also re-sent to a player who reconnects while a
+match is in progress (followed by `lobby_state`).
+
+The board is sent as rows of single-character tiles plus a `legend` mapping
+each character to a `kind`. Rows are top-to-bottom (`y = 0` first); each row is
+`width` characters, left-to-right (`x = 0` first).
 
 ```json
 {
   "type": "game_started",
   "payload": {
     "map_id": "trench_alpha",
+    "room_code": "J645EP",
     "board": {
       "width": 20,
       "height": 12,
-      "tiles": [
-        { "x": 0, "y": 0, "kind": "wall" },
-        { "x": 1, "y": 0, "kind": "trench" }
-      ]
+      "grid": [
+        "####################",
+        "#S......#..X..#....S#"
+      ],
+      "legend": {
+        "#": "wall",
+        ".": "trench",
+        "S": "spawn",
+        "D": "data_node",
+        "X": "extraction",
+        "M": "mine",
+        "V": "vent"
+      }
     },
-    "players": [
-      { "player_id": "p_ab12", "color": "#3cf" }
+    "submarines": [
+      {
+        "player_id": "p_ab12",
+        "display_name": "Nautilus",
+        "color": "#3cf",
+        "x": 2,
+        "y": 2,
+        "facing": "S",
+        "depth": "shallow",
+        "hull": 10,
+        "data_collected": 0
+      }
     ]
   }
 }
 ```
 
-Tile `kind` values: `wall`, `trench`, `mine`, `vent`, `data_node`,
-`extraction`. Hidden attributes (mines, data nodes) are omitted from a player's
-view until revealed — see `game_state`.
+The `grid` snippet above is illustrative (rows abbreviated). Tile `kind`
+values: `wall`, `trench`, `spawn`, `mine`, `vent`, `data_node`, `extraction`.
+The current phase sends the full board to every player; fog of war (Phase 6)
+will trim it to visible tiles via `game_state`.
 
 ### `round_started`
 Begins a new round; announces round number and hand size.

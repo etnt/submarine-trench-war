@@ -9,8 +9,8 @@
 %%
 %% Server->client messages are delivered by sending `{push, Type, Payload}`
 %% to each connection pid; the WebSocket handler stamps the envelope and
-%% forwards it. Phase 1 handles the lobby lifecycle; `game_started` carries
-%% a minimal payload that Phase 2 will extend with the board.
+%% forwards it. Phase 1 handles the lobby lifecycle; Phase 2 adds the board
+%% and submarine state, carried by `game_started` when the match begins.
 %% @end
 %%%-------------------------------------------------------------------
 -module(stw_game).
@@ -22,6 +22,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(COLORS, [<<"#3cf">>, <<"#f83">>, <<"#6c6">>, <<"#c6f">>]).
+-define(START_HULL, 10).
 
 -record(state, {
     room_code :: binary(),
@@ -30,7 +31,9 @@
     host_id :: binary() | undefined,
     phase = lobby :: lobby | playing,
     join_order = [] :: [binary()],
-    players = #{} :: #{binary() => map()}
+    players = #{} :: #{binary() => map()},
+    board :: stw_board:board(),
+    subs = #{} :: #{binary() => map()}
 }).
 
 %% --- API --------------------------------------------------------------
@@ -68,7 +71,8 @@ start_game(GamePid, PlayerId) ->
 init({RoomCode, Opts}) ->
     {ok, #state{room_code = RoomCode,
                 map_id = opt(map_id, Opts, <<"trench_alpha">>),
-                max_players = opt(max_players, Opts, 4)}}.
+                max_players = opt(max_players, Opts, 4),
+                board = stw_board:default()}}.
 
 handle_call({join, PlayerId, DisplayName, WsPid}, _From, S) ->
     case maps:is_key(PlayerId, S#state.players) of
@@ -114,7 +118,7 @@ handle_call({set_ready, PlayerId, Ready}, _From, S) ->
 handle_call({start_game, PlayerId}, _From, S) ->
     case PlayerId =:= S#state.host_id of
         true ->
-            S1 = S#state{phase = playing},
+            S1 = S#state{phase = playing, subs = place_subs(S)},
             broadcast(S1, <<"game_started">>, game_started_payload(S1)),
             {reply, ok, S1};
         false ->
@@ -240,11 +244,53 @@ player_json(Id, P) ->
       <<"connected">> => maps:get(connected, P)}.
 
 game_started_payload(S) ->
-    Players = [#{<<"player_id">> => Id, <<"color">> => color_for(Idx)}
-               || {Idx, Id} <- enumerate(S#state.join_order)],
     #{<<"map_id">> => S#state.map_id,
       <<"room_code">> => S#state.room_code,
-      <<"players">> => Players}.
+      <<"board">> => stw_board:to_json(S#state.board),
+      <<"submarines">> => submarines_json(S)}.
+
+submarines_json(S) ->
+    [sub_json(Idx, Id, S)
+     || {Idx, Id} <- enumerate(S#state.join_order),
+        maps:is_key(Id, S#state.subs)].
+
+sub_json(Idx, Id, S) ->
+    Sub = maps:get(Id, S#state.subs),
+    P = maps:get(Id, S#state.players),
+    #{<<"player_id">> => Id,
+      <<"display_name">> => maps:get(display_name, P),
+      <<"color">> => color_for(Idx),
+      <<"x">> => maps:get(x, Sub),
+      <<"y">> => maps:get(y, Sub),
+      <<"facing">> => maps:get(facing, Sub),
+      <<"depth">> => maps:get(depth, Sub),
+      <<"hull">> => maps:get(hull, Sub),
+      <<"data_collected">> => maps:get(data, Sub)}.
+
+%% --- board / submarines ----------------------------------------------
+
+%% Seat each player (in join order) on a spawn tile. Extra spawns are left
+%% empty; there are never more players than spawns because max_players is
+%% capped at the spawn count.
+place_subs(S) ->
+    Ids = S#state.join_order,
+    Spawns = stw_board:spawns(S#state.board),
+    {_, H} = stw_board:dims(S#state.board),
+    N = min(length(Ids), length(Spawns)),
+    Pairs = lists:zip(lists:sublist(Ids, N), lists:sublist(Spawns, N)),
+    maps:from_list([{Id, make_sub(Spawn, H)} || {Id, Spawn} <- Pairs]).
+
+make_sub({X, Y}, Height) ->
+    #{x => X,
+      y => Y,
+      facing => facing_from(Y, Height),
+      depth => <<"shallow">>,
+      hull => ?START_HULL,
+      data => 0}.
+
+%% Point the sub toward the centre of the map from its spawn corner.
+facing_from(Y, Height) when Y * 2 < Height -> <<"S">>;
+facing_from(_Y, _Height) -> <<"N">>.
 
 %% --- misc -------------------------------------------------------------
 

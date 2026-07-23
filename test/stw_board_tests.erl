@@ -1,0 +1,62 @@
+%%%-------------------------------------------------------------------
+%% @doc Tests for the static board model.
+%%%-------------------------------------------------------------------
+-module(stw_board_tests).
+
+-include_lib("eunit/include/eunit.hrl").
+
+dims_test() ->
+    B = stw_board:default(),
+    {W, H} = stw_board:dims(B),
+    ?assert(W > 0),
+    ?assert(H > 0).
+
+border_is_wall_test() ->
+    B = stw_board:default(),
+    {W, H} = stw_board:dims(B),
+    [?assertEqual(wall, stw_board:tile_at(B, {X, 0})) || X <- lists:seq(0, W - 1)],
+    [?assertEqual(wall, stw_board:tile_at(B, {X, H - 1})) || X <- lists:seq(0, W - 1)],
+    [?assertEqual(wall, stw_board:tile_at(B, {0, Y})) || Y <- lists:seq(0, H - 1)],
+    [?assertEqual(wall, stw_board:tile_at(B, {W - 1, Y})) || Y <- lists:seq(0, H - 1)],
+    ok.
+
+spawns_are_open_test() ->
+    B = stw_board:default(),
+    Spawns = stw_board:spawns(B),
+    ?assertEqual(4, length(Spawns)),
+    [?assertEqual(spawn, stw_board:tile_at(B, C)) || C <- Spawns],
+    ok.
+
+%% The JSON grid must be rectangular: every row is exactly `width` chars.
+grid_rectangular_test() ->
+    B = stw_board:default(),
+    #{<<"width">> := W, <<"height">> := H, <<"grid">> := Grid} = stw_board:to_json(B),
+    ?assertEqual(H, length(Grid)),
+    [?assertEqual(W, byte_size(Row)) || Row <- Grid],
+    ok.
+
+%% Every non-wall tile must be reachable from a spawn: flood-fill from one
+%% spawn and confirm it covers all open tiles. Catches map-authoring errors
+%% that would strand data nodes or the extraction zone.
+connectivity_test() ->
+    B = stw_board:default(),
+    {W, H} = stw_board:dims(B),
+    Open = [{X, Y} || X <- lists:seq(0, W - 1), Y <- lists:seq(0, H - 1),
+                      stw_board:tile_at(B, {X, Y}) =/= wall],
+    [Start | _] = stw_board:spawns(B),
+    Reached = flood(B, [Start], sets:new()),
+    Missing = [C || C <- Open, not sets:is_element(C, Reached)],
+    ?assertEqual([], Missing).
+
+flood(_B, [], Seen) ->
+    Seen;
+flood(B, [C | Rest], Seen) ->
+    case sets:is_element(C, Seen) orelse stw_board:tile_at(B, C) =:= wall of
+        true ->
+            flood(B, Rest, Seen);
+        false ->
+            flood(B, neighbours(C) ++ Rest, sets:add_element(C, Seen))
+    end.
+
+neighbours({X, Y}) ->
+    [{X + 1, Y}, {X - 1, Y}, {X, Y + 1}, {X, Y - 1}].
