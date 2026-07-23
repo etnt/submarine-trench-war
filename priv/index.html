@@ -155,6 +155,14 @@
       display: flex; justify-content: space-between; align-items: baseline;
       font-size: 0.9rem; color: var(--accent); margin-bottom: 8px;
     }
+    .ping-timer {
+      font-family: "SF Mono", Menlo, Consolas, monospace;
+      font-size: 0.85rem; color: var(--accent); padding: 1px 8px;
+      border: 1px solid var(--accent-dim); border-radius: 10px;
+      margin-right: 10px;
+    }
+    .ping-timer.urgent { color: var(--err); border-color: var(--err); }
+    .hand-label { margin: 2px 0 6px; }
     .slots { display: flex; gap: 8px; margin-bottom: 12px; }
     .slot {
       flex: 1; aspect-ratio: 3 / 4; min-height: 56px;
@@ -176,13 +184,14 @@
       min-width: 60px;
     }
     .card-btn .glyph { font-size: 1rem; }
+    .card-btn.used { opacity: 0.32; }
     #program.locked .palette, #program.locked .slots { pointer-events: none; opacity: 0.6; }
   </style>
 </head>
 <body>
   <header>
     <h1>Submarine Trench War</h1>
-    <div class="subtitle">Phase 3 &mdash; program &amp; resolve</div>
+    <div class="subtitle">Phase 4 &mdash; draft &amp; the ping timer</div>
   </header>
 
   <main>
@@ -240,10 +249,13 @@
       <!-- Register programming -->
       <div id="program">
         <div class="prog-head">
-          <span>Program your 5 registers</span>
+          <span>Draft 5 cards into your registers</span>
+          <span style="flex:1"></span>
+          <span id="pingTimer" class="ping-timer hidden">30s</span>
           <span id="lockTally" class="subtitle">0 / 0 locked</span>
         </div>
         <div class="slots" id="slots"></div>
+        <div class="hand-label subtitle">Your hand</div>
         <div class="palette" id="palette"></div>
         <div class="controls" style="margin-top: 10px;">
           <button id="btnClear">Clear</button>
@@ -288,6 +300,8 @@
       locked: false,    // have I locked this round?
       lockTally: null,  // { locked, total } from player_locked
       anim: null,       // active replay animation, or null
+      hand: [],         // my dealt cards this round: [{ id, kind }]
+      timerEndsAt: null,// Ping Timer deadline (epoch ms), or null
     };
 
     // Navigation card metadata: label + glyph for the UI.
@@ -318,6 +332,7 @@
       slots: $("slots"), palette: $("palette"),
       btnClear: $("btnClear"), btnLock: $("btnLock"),
       progToast: $("progToast"), program: $("program"),
+      pingTimer: $("pingTimer"),
     };
     const ctx = el.canvas.getContext("2d");
 
@@ -386,7 +401,10 @@
         case "lobby_state": onLobbyState(p); break;
         case "game_started": onGameStarted(p); break;
         case "round_started": onRoundStarted(p); break;
+        case "deal_hand": onDealHand(p); break;
         case "player_locked": onPlayerLocked(p); break;
+        case "timer_started": onTimerStarted(p); break;
+        case "registers_resolving": onRegistersResolving(p); break;
         case "round_result": onRoundResult(p); break;
         case "game_state": onGameState(p); break;
         case "error": onError(p); break;
@@ -435,16 +453,23 @@
 
     function onRoundStarted(p) {
       state.round = p.round || state.round;
-      state.cards = p.cards || state.cards;
       state.program = [];
       state.locked = false;
       state.anim = null;
+      state.timerEndsAt = null;
+      el.pingTimer.classList.add("hidden");
       el.roundTag.textContent = "Round " + state.round;
       el.program.classList.remove("locked");
-      renderPalette();
       renderSlots();
       el.progToast.textContent = "";
-      log("sys", "Round " + state.round + " \u2014 program your registers.");
+      log("sys", "Round " + state.round + " \u2014 draft your registers.");
+    }
+
+    function onDealHand(p) {
+      if (p.player_id && p.player_id !== state.playerId) return;
+      state.hand = p.cards || [];
+      renderPalette();
+      renderSlots();
     }
 
     function onPlayerLocked(p) {
@@ -452,7 +477,24 @@
       el.lockTally.textContent = `${p.locked} / ${p.total} locked`;
     }
 
+    function onTimerStarted(p) {
+      state.timerEndsAt = p.ends_at || (Date.now() + (p.duration_ms || 30000));
+      el.pingTimer.classList.remove("hidden");
+      log("sys", "Ping Timer started.");
+    }
+
+    function onRegistersResolving(p) {
+      state.timerEndsAt = null;
+      el.pingTimer.classList.add("hidden");
+      const auto = (p.auto_filled || []);
+      if (auto.includes(state.playerId)) {
+        el.progToast.textContent = "Timer expired \u2014 registers auto-filled!";
+      }
+    }
+
     function onRoundResult(p) {
+      state.timerEndsAt = null;
+      el.pingTimer.classList.add("hidden");
       // Replay the phases, then settle on the authoritative final subs.
       const finalSubs = p.submarines || state.subs;
       startReplay(p.phases || [], finalSubs);
@@ -534,16 +576,24 @@
     }
 
     // --- register programming -------------------------------------------
+    // state.hand = [{ id, kind }]; state.program = ordered card IDs.
+    function kindOfCard(id) {
+      const c = state.hand.find((c) => c.id === id);
+      return c ? c.kind : null;
+    }
+
     function renderPalette() {
       el.palette.innerHTML = "";
-      state.cards.forEach((kind) => {
-        const meta = CARD_META[kind] || { label: kind, glyph: "?" };
+      state.hand.forEach((card) => {
+        const meta = CARD_META[card.kind] || { label: card.kind, glyph: "?" };
+        const used = state.program.includes(card.id);
         const b = document.createElement("button");
-        b.className = "card-btn";
+        b.className = "card-btn" + (used ? " used" : "");
         b.innerHTML =
           `<span class="glyph">${meta.glyph}</span><span>${meta.label}</span>`;
-        b.title = kind;
-        b.addEventListener("click", () => addCard(kind));
+        b.title = card.kind;
+        b.disabled = used || state.locked;
+        b.addEventListener("click", () => addCard(card.id));
         el.palette.appendChild(b);
       });
     }
@@ -551,7 +601,8 @@
     function renderSlots() {
       el.slots.innerHTML = "";
       for (let i = 0; i < REGISTERS; i++) {
-        const kind = state.program[i];
+        const id = state.program[i];
+        const kind = id ? kindOfCard(id) : null;
         const slot = document.createElement("div");
         slot.className = "slot" + (kind ? " filled" : "") +
           (state.locked ? " locked" : "");
@@ -565,13 +616,15 @@
         }
         el.slots.appendChild(slot);
       }
+      renderPalette();
       updateLockButton();
     }
 
-    function addCard(kind) {
+    function addCard(id) {
       if (state.locked) return;
       if (state.program.length >= REGISTERS) return;
-      state.program.push(kind);
+      if (state.program.includes(id)) return;
+      state.program.push(id);
       renderSlots();
     }
 
@@ -761,7 +814,8 @@
       if (state.locked || state.program.length === 0) return;
       const me = mySub();
       if (!me) return;
-      const pts = predictPath(me, state.program);
+      const kinds = state.program.map(kindOfCard).filter(Boolean);
+      const pts = predictPath(me, kinds);
       const cx = (p) => ox + p.x * size + size / 2;
       const cy = (p) => oy + p.y * size + size / 2;
       g.save();
@@ -841,8 +895,16 @@
     }
 
     function tick(t) {
-      if (state.view === "game") renderBoard(t);
+      if (state.view === "game") { renderBoard(t); updateTimer(); }
       requestAnimationFrame(tick);
+    }
+
+    function updateTimer() {
+      if (state.timerEndsAt == null) return;
+      const ms = Math.max(0, state.timerEndsAt - Date.now());
+      const secs = Math.ceil(ms / 1000);
+      el.pingTimer.textContent = secs + "s";
+      el.pingTimer.classList.toggle("urgent", secs <= 10);
     }
 
     function badge(cls, text) {

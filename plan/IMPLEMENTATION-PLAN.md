@@ -102,12 +102,12 @@ animated replay. This is the first genuinely playable loop.
 
 Goal: card economy and the multiplayer pacing mechanic.
 
-* [ ] Deal 7-9 cards per turn; players pick 5 to program.
-* [ ] Enforce hand size reduction based on hull damage (min 5).
-* [ ] Implement the 30-second Ping Timer once the first player locks in.
-* [ ] Auto-fill unlocked registers with random chaotic cards on timeout.
-* [ ] Client: hand display, draft selection, and countdown timer UI.
-* [ ] Handle a player locking early / all players locked early.
+* [x] Deal 7-9 cards per turn; players pick 5 to program.
+* [x] Enforce hand size reduction based on hull damage (min 5).
+* [x] Implement the 30-second Ping Timer once the first player locks in.
+* [x] Auto-fill unlocked registers with random chaotic cards on timeout.
+* [x] Client: hand display, draft selection, and countdown timer UI.
+* [x] Handle a player locking early / all players locked early.
 
 **Milestone:** Full round cadence: draft → program → timer → resolve.
 

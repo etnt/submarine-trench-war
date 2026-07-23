@@ -140,22 +140,22 @@ Toggle ready state in the lobby.
 Host-only request to start the match early.
 
 ### `program_registers`
-Working selection of 5 ordered navigation cards for the round. May be sent
-multiple times before locking (the server keeps the latest). In this phase
-`registers` are card **kinds** (see `deal_hand` for the kind list); card
-drafting with per-card IDs arrives with Phase 4.
+Working selection of 5 ordered cards for the round, given as **card IDs**
+drawn from this round's dealt hand (see `deal_hand`). May be sent multiple
+times before locking (the server keeps the latest). The 5 IDs must be distinct
+and all present in the current hand.
 
 ```json
 {
   "type": "program_registers",
   "payload": {
-    "registers": ["ahead_standard", "port_bank", "ahead_flank", "dive", "reverse"]
+    "registers": ["r3c7", "r3c2", "r3c9", "r3c1", "r3c4"]
   }
 }
 ```
 
-Errors: `invalid_register` if the list is not exactly 5 cards or contains an
-unknown kind; `not_in_game` if the sender has no submarine.
+Errors: `invalid_register` if the list is not exactly 5 distinct IDs, or any ID
+is not in the player's hand; `not_in_game` if the sender has no submarine.
 
 ### `lock_registers`
 Binding lock of the most recently programmed registers. Takes no payload — the
@@ -290,49 +290,55 @@ The current phase sends the full board to every player; fog of war (Phase 6)
 will trim it to visible tiles via `game_state`.
 
 ### `round_started`
-Begins a new round; announces the round number, the number of registers, and
-the navigation card kinds available to program. (Card drafting / `deal_hand`
-arrives in Phase 4; for now players may program any of these kinds.)
+Begins a new round; announces the round number and the number of registers.
+Each player's dealt hand arrives separately via the private `deal_hand`
+message (hand size varies per player with hull damage).
 
 ```json
 {
   "type": "round_started",
-  "payload": {
-    "round": 3,
-    "registers": 5,
-    "cards": ["ahead_standard", "ahead_flank", "reverse",
-              "port_bank", "starboard_bank", "dive", "surface"]
-  }
+  "payload": { "round": 3, "registers": 5 }
 }
 ```
 
 ### `deal_hand`
-Private per-player message delivering the round's cards.
+Private per-player message delivering the round's cards. The number of cards
+is the player's hand size: full hull deals 9, and each point of hull damage
+removes one card down to a minimum of 5 (never fewer than the register count).
+Players pick 5 of these IDs to `program_registers`.
 
 ```json
 {
   "type": "deal_hand",
   "payload": {
     "round": 3,
+    "player_id": "p_ab12",
     "cards": [
-      { "id": "card_7", "kind": "ahead_flank" },
-      { "id": "card_2", "kind": "port_bank" },
-      { "id": "card_9", "kind": "torpedo" },
-      { "id": "card_1", "kind": "dive" },
-      { "id": "card_4", "kind": "ahead_standard" },
-      { "id": "card_5", "kind": "ink_cloud" }
+      { "id": "r3c1", "kind": "ahead_flank" },
+      { "id": "r3c2", "kind": "port_bank" },
+      { "id": "r3c3", "kind": "dive" },
+      { "id": "r3c4", "kind": "ahead_standard" },
+      { "id": "r3c5", "kind": "reverse" },
+      { "id": "r3c6", "kind": "starboard_bank" },
+      { "id": "r3c7", "kind": "surface" },
+      { "id": "r3c8", "kind": "ahead_standard" },
+      { "id": "r3c9", "kind": "port_bank" }
     ]
   }
 }
 ```
 
-Card `kind` values:
+> **Phase 4 note:** the deck is navigation cards only for now. Tactical card
+> kinds (`torpedo`, `sonar_ping`, `ink_cloud`, …) enter the deck with the
+> combat phases.
+
+Navigation card `kind` values:
 `ahead_standard`, `ahead_flank`, `reverse`, `port_bank`, `starboard_bank`,
-`dive`, `surface`, `torpedo`, `depth_charge`, `sonar_ping`, `decoy_torpedo`,
-`emp_burst`, `ink_cloud`, `drift` (chaotic auto-fill).
+`dive`, `surface`.
 
 ### `timer_started`
-The 30-second Ping Timer has begun (first player locked in).
+The 30-second Ping Timer has begun (first player locked in). `ends_at` is a
+UNIX epoch timestamp in milliseconds; the client counts down to it.
 
 ```json
 {
@@ -352,7 +358,9 @@ Broadcast when a player locks their registers (no card contents revealed).
 ```
 
 ### `registers_resolving`
-All players are locked (or the timer expired). Auto-filled players are flagged.
+All players are locked (or the timer expired) and resolution is about to run.
+`auto_filled` lists players whose registers were filled with random cards
+because they had not programmed when the timer expired.
 
 ```json
 {

@@ -25,6 +25,9 @@
 -define(COLORS, [<<"#3cf">>, <<"#f83">>, <<"#6c6">>, <<"#c6f">>]).
 -define(START_HULL, 10).
 -define(REGISTERS, 5).
+-define(BASE_HAND, 9).
+-define(MIN_HAND, 5).
+-define(PING_TIMER_MS, 30000).
 
 -record(state, {
     room_code :: binary(),
@@ -37,8 +40,11 @@
     board :: stw_board:board(),
     subs = #{} :: #{binary() => map()},
     round = 0 :: non_neg_integer(),
+    hands = #{} :: #{binary() => [map()]},
     programs = #{} :: #{binary() => [binary()]},
-    locked = [] :: [binary()]
+    locked = [] :: [binary()],
+    timer_ref :: reference() | undefined,
+    timer_ends :: integer() | undefined
 }).
 
 %% --- API --------------------------------------------------------------
@@ -71,7 +77,8 @@ set_ready(GamePid, PlayerId, Ready) ->
 start_game(GamePid, PlayerId) ->
     gen_server:call(GamePid, {start_game, PlayerId}).
 
-%% @doc Submit an ordered list of 5 navigation card kinds for the round.
+%% @doc Submit an ordered list of 5 card IDs (drawn from this round's dealt
+%% hand) to program into the registers.
 -spec program_registers(pid(), binary(), [binary()]) ->
     ok | {error, atom()}.
 program_registers(GamePid, PlayerId, Cards) ->
@@ -115,7 +122,9 @@ handle_call({reconnect, PlayerId, WsPid}, _From, S) ->
                 playing ->
                     push(WsPid, <<"game_started">>, game_started_payload(S1)),
                     push(WsPid, <<"game_state">>, game_state_payload(S1)),
-                    push(WsPid, <<"round_started">>, round_started_payload(S1));
+                    push(WsPid, <<"round_started">>, round_started_payload(S1)),
+                    push_hand(S1, PlayerId),
+                    maybe_push_timer(S1, WsPid);
                 lobby ->
                     ok
             end,
@@ -138,17 +147,18 @@ handle_call({start_game, PlayerId}, _From, S) ->
     case PlayerId =:= S#state.host_id of
         true ->
             S1 = S#state{phase = playing, subs = place_subs(S),
-                         round = 1, programs = #{}, locked = []},
+                         round = 1, programs = #{}, locked = [],
+                         timer_ref = undefined, timer_ends = undefined},
             broadcast(S1, <<"game_started">>, game_started_payload(S1)),
-            broadcast(S1, <<"round_started">>, round_started_payload(S1)),
-            {reply, ok, S1};
+            S2 = deal_and_announce(S1),
+            {reply, ok, S2};
         false ->
             {reply, {error, not_host}, S}
     end;
 handle_call({program, PlayerId, Cards}, _From, S) ->
     case validate_program(PlayerId, Cards, S) of
-        ok ->
-            S1 = S#state{programs = maps:put(PlayerId, Cards, S#state.programs)},
+        {ok, Kinds} ->
+            S1 = S#state{programs = maps:put(PlayerId, Kinds, S#state.programs)},
             {reply, ok, S1};
         {error, _} = Err ->
             {reply, Err, S}
@@ -163,7 +173,7 @@ handle_call({lock, PlayerId}, _From, S) ->
                     {reply, {error, no_program}, S};
                 true ->
                     Locked = lists:usort([PlayerId | S#state.locked]),
-                    S1 = S#state{locked = Locked},
+                    S1 = maybe_start_timer(S#state{locked = Locked}),
                     broadcast(S1, <<"player_locked">>, locked_payload(S1, PlayerId)),
                     {reply, ok, maybe_resolve(S1)}
             end
@@ -192,6 +202,15 @@ handle_info({'DOWN', Mon, process, _Pid, _Reason}, S) ->
             {noreply, S1};
         error ->
             {noreply, S}
+    end;
+handle_info(ping_timeout, S) ->
+    Seated = maps:keys(S#state.subs),
+    Unlocked = Seated -- S#state.locked,
+    case S#state.phase =:= playing andalso Unlocked =/= [] of
+        false ->
+            {noreply, cancel_timer(S)};
+        true ->
+            {noreply, resolve_on_timeout(S, Unlocked)}
     end;
 handle_info(_Info, S) ->
     {noreply, S}.
@@ -295,8 +314,20 @@ game_started_payload(S) ->
 
 round_started_payload(S) ->
     #{<<"round">> => S#state.round,
-      <<"registers">> => ?REGISTERS,
-      <<"cards">> => stw_engine:card_kinds()}.
+      <<"registers">> => ?REGISTERS}.
+
+deal_hand_payload(Round, PlayerId, Hand) ->
+    #{<<"round">> => Round,
+      <<"player_id">> => PlayerId,
+      <<"cards">> => Hand}.
+
+resolving_payload(S, AutoFilled) ->
+    #{<<"round">> => S#state.round,
+      <<"auto_filled">> => AutoFilled}.
+
+timer_payload(S) ->
+    #{<<"duration_ms">> => ?PING_TIMER_MS,
+      <<"ends_at">> => S#state.timer_ends}.
 
 game_state_payload(S) ->
     #{<<"round">> => S#state.round,
@@ -314,38 +345,143 @@ round_result_payload(S, Phases) ->
 
 %% --- round resolution -------------------------------------------------
 
-validate_program(PlayerId, Cards, S) ->
+%% Deal fresh hands, announce the round, and send each player their private
+%% hand. Called at game start and after every resolution.
+deal_and_announce(S) ->
+    Hands = deal_hands(S),
+    S1 = S#state{hands = Hands},
+    broadcast(S1, <<"round_started">>, round_started_payload(S1)),
+    lists:foreach(fun(Id) -> push_hand(S1, Id) end, seated_ids(S1)),
+    broadcast(S1, <<"game_state">>, game_state_payload(S1)),
+    S1.
+
+%% Build a hand per seated player, sized by that sub's remaining hull.
+deal_hands(S) ->
+    Round = S#state.round,
+    maps:from_list(
+      [{Id, deal_one_hand(Round, hull_of(Id, S))} || Id <- seated_ids(S)]).
+
+deal_one_hand(Round, Hull) ->
+    N = hand_size(Hull),
+    [#{<<"id">> => card_id(Round, I), <<"kind">> => random_kind()}
+     || I <- lists:seq(1, N)].
+
+%% Full hull => full hand; each point of damage removes one card, never
+%% dropping below the register count (a damaged nav-computer offers less).
+hand_size(Hull) ->
+    max(?MIN_HAND, ?BASE_HAND - (?START_HULL - Hull)).
+
+card_id(Round, Idx) ->
+    <<"r", (integer_to_binary(Round))/binary,
+      "c", (integer_to_binary(Idx))/binary>>.
+
+random_kind() ->
+    Kinds = stw_engine:card_kinds(),
+    lists:nth(rand:uniform(length(Kinds)), Kinds).
+
+push_hand(S, PlayerId) ->
+    Hand = maps:get(PlayerId, S#state.hands, []),
+    WsPid = ws_of(PlayerId, S),
+    push(WsPid, <<"deal_hand">>,
+         deal_hand_payload(S#state.round, PlayerId, Hand)).
+
+%% Validate 5 distinct card IDs from the player's current hand and map them
+%% to the ordered list of card kinds the engine consumes.
+validate_program(PlayerId, Ids, S) ->
     IsPlaying = S#state.phase =:= playing,
     Seated = maps:is_key(PlayerId, S#state.subs),
+    Hand = maps:get(PlayerId, S#state.hands, []),
+    Distinct = length(lists:usort(Ids)) =:= length(Ids),
     if
         not IsPlaying -> {error, not_in_game};
         not Seated -> {error, not_in_game};
-        length(Cards) =/= ?REGISTERS -> {error, invalid_register};
-        true ->
-            case lists:all(fun stw_engine:valid_card/1, Cards) of
-                true -> ok;
-                false -> {error, invalid_register}
-            end
+        length(Ids) =/= ?REGISTERS -> {error, invalid_register};
+        not Distinct -> {error, invalid_register};
+        true -> map_ids_to_kinds(Ids, Hand)
+    end.
+
+map_ids_to_kinds(Ids, Hand) ->
+    Index = maps:from_list([{maps:get(<<"id">>, C), maps:get(<<"kind">>, C)}
+                            || C <- Hand]),
+    case lists:all(fun(Id) -> maps:is_key(Id, Index) end, Ids) of
+        true -> {ok, [maps:get(Id, Index) || Id <- Ids]};
+        false -> {error, invalid_register}
     end.
 
 %% Resolve the round once every seated player has locked in.
 maybe_resolve(S) ->
-    Seated = lists:sort(maps:keys(S#state.subs)),
+    Seated = lists:sort(seated_ids(S)),
     case Seated =/= [] andalso lists:sort(S#state.locked) =:= Seated of
-        true -> resolve_round(S);
+        true -> resolve_round(S, []);
         false -> S
     end.
 
-resolve_round(S) ->
+%% Ping Timer expired: auto-fill any unlocked players with random cards,
+%% then resolve. Players who had programmed (but not locked) keep their
+%% choice; only those with no program are flagged as auto-filled.
+resolve_on_timeout(S, Unlocked) ->
+    {Programs, AutoFilled} =
+        lists:foldl(
+          fun(Id, {Progs, Auto}) ->
+              case maps:is_key(Id, Progs) of
+                  true -> {Progs, Auto};
+                  false ->
+                      Kinds = [random_kind() || _ <- lists:seq(1, ?REGISTERS)],
+                      {maps:put(Id, Kinds, Progs), [Id | Auto]}
+              end
+          end, {S#state.programs, []}, Unlocked),
+    S1 = S#state{programs = Programs,
+                 locked = lists:usort(S#state.locked ++ Unlocked)},
+    resolve_round(S1, lists:reverse(AutoFilled)).
+
+resolve_round(S, AutoFilled) ->
+    S0 = cancel_timer(S),
+    broadcast(S0, <<"registers_resolving">>, resolving_payload(S0, AutoFilled)),
     {Subs2, Phases} =
-        stw_engine:resolve_round(S#state.board, S#state.subs, S#state.programs),
-    S1 = S#state{subs = Subs2},
+        stw_engine:resolve_round(S0#state.board, S0#state.subs, S0#state.programs),
+    S1 = S0#state{subs = Subs2},
     broadcast(S1, <<"round_result">>, round_result_payload(S1, Phases)),
-    %% Advance to the next round and invite fresh programs.
-    S2 = S1#state{round = S1#state.round + 1, programs = #{}, locked = []},
-    broadcast(S2, <<"round_started">>, round_started_payload(S2)),
-    broadcast(S2, <<"game_state">>, game_state_payload(S2)),
-    S2.
+    %% Advance to the next round: fresh hands, clear programs/locks/timer.
+    S2 = S1#state{round = S1#state.round + 1,
+                  programs = #{}, locked = [],
+                  timer_ref = undefined, timer_ends = undefined},
+    deal_and_announce(S2).
+
+%% --- ping timer -------------------------------------------------------
+
+%% Start the 30s Ping Timer on the first lock of the round.
+maybe_start_timer(S) when S#state.timer_ref =/= undefined -> S;
+maybe_start_timer(S) ->
+    Ref = erlang:send_after(?PING_TIMER_MS, self(), ping_timeout),
+    Ends = now_ms() + ?PING_TIMER_MS,
+    S1 = S#state{timer_ref = Ref, timer_ends = Ends},
+    broadcast(S1, <<"timer_started">>, timer_payload(S1)),
+    S1.
+
+cancel_timer(S) when S#state.timer_ref =:= undefined -> S;
+cancel_timer(S) ->
+    erlang:cancel_timer(S#state.timer_ref),
+    S#state{timer_ref = undefined, timer_ends = undefined}.
+
+maybe_push_timer(S, _WsPid) when S#state.timer_ref =:= undefined -> ok;
+maybe_push_timer(S, WsPid) ->
+    push(WsPid, <<"timer_started">>, timer_payload(S)).
+
+now_ms() -> erlang:system_time(millisecond).
+
+%% --- lookups ----------------------------------------------------------
+
+seated_ids(S) ->
+    [Id || Id <- S#state.join_order, maps:is_key(Id, S#state.subs)].
+
+hull_of(PlayerId, S) ->
+    maps:get(hull, maps:get(PlayerId, S#state.subs)).
+
+ws_of(PlayerId, S) ->
+    case maps:find(PlayerId, S#state.players) of
+        {ok, #{ws_pid := WsPid}} -> WsPid;
+        _ -> undefined
+    end.
 
 submarines_json(S) ->
     [sub_json(Idx, Id, S)
