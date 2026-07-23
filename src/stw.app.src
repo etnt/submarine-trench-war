@@ -1,0 +1,14 @@
+{application, stw,
+ [{description, "Submarine Trench War game server"},
+  {vsn, "0.1.0"},
+  {registered, [stw_sup]},
+  {mod, {stw_app, []}},
+  {applications,
+   [kernel,
+    stdlib,
+    cowboy]},
+  {env, [{http_port, 8080}]},
+  {modules, []},
+  {licenses, ["Apache-2.0"]},
+  {links, []}
+ ]}.

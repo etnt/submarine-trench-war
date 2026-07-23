@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Submarine Trench War</title>
+  <style>
+    :root {
+      --bg: #041018;
+      --bg-panel: #0a1f2e;
+      --accent: #3cf;
+      --accent-dim: #1a6b82;
+      --text: #cfe8f2;
+      --ok: #4caf50;
+      --err: #e05555;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: radial-gradient(circle at 50% -10%, #0a2436, var(--bg));
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    header {
+      text-align: center;
+      padding: 24px 16px 8px;
+    }
+    h1 {
+      margin: 0;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-size: 1.6rem;
+      color: var(--accent);
+    }
+    .subtitle { opacity: 0.6; font-size: 0.85rem; }
+    main {
+      width: min(720px, 92vw);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      padding: 16px;
+    }
+    .panel {
+      background: var(--bg-panel);
+      border: 1px solid var(--accent-dim);
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.9rem;
+    }
+    .dot {
+      width: 12px; height: 12px; border-radius: 50%;
+      background: var(--err);
+      box-shadow: 0 0 8px currentColor;
+      transition: background 0.2s;
+    }
+    .dot.connected { background: var(--ok); }
+    canvas {
+      width: 100%;
+      background: #02090f;
+      border-radius: 8px;
+      display: block;
+    }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+    button {
+      background: var(--accent-dim);
+      color: var(--text);
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      padding: 8px 14px;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    button:hover:not(:disabled) { background: var(--accent); color: #02090f; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    #log {
+      font-family: "SF Mono", Menlo, Consolas, monospace;
+      font-size: 0.78rem;
+      background: #02090f;
+      border-radius: 8px;
+      padding: 12px;
+      height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      line-height: 1.5;
+    }
+    .log-in { color: var(--accent); }
+    .log-out { color: #8fd694; }
+    .log-sys { color: #b0b0b0; }
+    .log-err { color: var(--err); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Submarine Trench War</h1>
+    <div class="subtitle">Phase 0 &mdash; connection check</div>
+  </header>
+
+  <main>
+    <div class="panel">
+      <div class="status-row">
+        <span class="dot" id="statusDot"></span>
+        <span id="statusText">Disconnected</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <canvas id="board" width="688" height="240"></canvas>
+    </div>
+
+    <div class="panel controls">
+      <button id="btnConnect">Connect</button>
+      <button id="btnPing" disabled>Send Ping</button>
+      <button id="btnEcho" disabled>Send Echo</button>
+      <button id="btnDisconnect" disabled>Disconnect</button>
+    </div>
+
+    <div class="panel">
+      <div id="log" aria-live="polite"></div>
+    </div>
+  </main>
+
+  <script>
+    "use strict";
+
+    const state = {
+      ws: null,
+      seq: 0,
+      connected: false,
+    };
+
+    const el = {
+      dot: document.getElementById("statusDot"),
+      statusText: document.getElementById("statusText"),
+      log: document.getElementById("log"),
+      btnConnect: document.getElementById("btnConnect"),
+      btnPing: document.getElementById("btnPing"),
+      btnEcho: document.getElementById("btnEcho"),
+      btnDisconnect: document.getElementById("btnDisconnect"),
+      canvas: document.getElementById("board"),
+    };
+
+    const ctx = el.canvas.getContext("2d");
+
+    function log(kind, text) {
+      const line = document.createElement("div");
+      line.className = "log-" + kind;
+      const time = new Date().toLocaleTimeString();
+      line.textContent = `[${time}] ${text}`;
+      el.log.appendChild(line);
+      el.log.scrollTop = el.log.scrollHeight;
+    }
+
+    function setConnected(connected) {
+      state.connected = connected;
+      el.dot.classList.toggle("connected", connected);
+      el.statusText.textContent = connected ? "Connected" : "Disconnected";
+      el.btnConnect.disabled = connected;
+      el.btnPing.disabled = !connected;
+      el.btnEcho.disabled = !connected;
+      el.btnDisconnect.disabled = !connected;
+    }
+
+    function wsUrl() {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      return `${proto}//${location.host}/ws`;
+    }
+
+    function connect() {
+      if (state.ws) return;
+      log("sys", `Connecting to ${wsUrl()} ...`);
+      const ws = new WebSocket(wsUrl());
+      state.ws = ws;
+
+      ws.onopen = () => {
+        setConnected(true);
+        log("sys", "WebSocket open.");
+        send("hello", { protocol_version: 1, display_name: "Nautilus" });
+      };
+      ws.onmessage = (event) => {
+        log("in", "\u2190 " + event.data);
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "pong") drawSonar();
+        } catch (_) { /* ignore */ }
+      };
+      ws.onerror = () => log("err", "WebSocket error.");
+      ws.onclose = () => {
+        setConnected(false);
+        state.ws = null;
+        log("sys", "WebSocket closed.");
+      };
+    }
+
+    function disconnect() {
+      if (state.ws) state.ws.close();
+    }
+
+    function send(type, payload) {
+      if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+        log("err", "Not connected.");
+        return;
+      }
+      const msg = {
+        type,
+        seq: state.seq++,
+        ts: Date.now(),
+        payload: payload || {},
+      };
+      const data = JSON.stringify(msg);
+      state.ws.send(data);
+      log("out", "\u2192 " + data);
+    }
+
+    // --- placeholder canvas rendering (real board arrives in Phase 2) ---
+    function drawBackground() {
+      const { width, height } = el.canvas;
+      ctx.fillStyle = "#02090f";
+      ctx.fillRect(0, 0, width, height);
+      ctx.strokeStyle = "rgba(60, 204, 255, 0.12)";
+      ctx.lineWidth = 1;
+      const step = 32;
+      for (let x = 0; x <= width; x += step) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+      }
+      for (let y = 0; y <= height; y += step) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+      ctx.fillStyle = "rgba(207, 232, 242, 0.4)";
+      ctx.font = "14px system-ui, sans-serif";
+      ctx.fillText("Board renders here in Phase 2", 16, 24);
+    }
+
+    let sonarR = 0;
+    function drawSonar() {
+      sonarR = 0;
+      const cx = el.canvas.width / 2;
+      const cy = el.canvas.height / 2;
+      function frame() {
+        drawBackground();
+        ctx.beginPath();
+        ctx.arc(cx, cy, sonarR, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(60, 204, 255, ${1 - sonarR / 160})`;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        sonarR += 4;
+        if (sonarR < 160) requestAnimationFrame(frame);
+        else drawBackground();
+      }
+      frame();
+    }
+
+    el.btnConnect.addEventListener("click", connect);
+    el.btnDisconnect.addEventListener("click", disconnect);
+    el.btnPing.addEventListener("click", () => send("ping", {}));
+    el.btnEcho.addEventListener("click", () =>
+      send("echo_test", { note: "hello from client", n: state.seq }));
+
+    setConnected(false);
+    drawBackground();
+    log("sys", "Ready. Click Connect to reach the server.");
+  </script>
+</body>
+</html>
