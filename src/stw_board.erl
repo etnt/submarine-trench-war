@@ -22,22 +22,26 @@
 -module(stw_board).
 
 -export([default/0, to_json/1, tile_at/2, dims/1, spawns/1, legend/0]).
+-export([current_at/2, turbulence_at/2]).
 
 -define(W, 20).
 -define(H, 12).
 
 -type coord() :: {non_neg_integer(), non_neg_integer()}.
 -type kind() :: wall | trench | spawn | data_node | extraction | mine | vent.
+-type dir() :: n | e | s | w.
 -type board() :: #{
     width := pos_integer(),
     height := pos_integer(),
     tiles := #{coord() => kind()},
     spawns := [coord()],
     data_nodes := [coord()],
-    extraction := coord()
+    extraction := coord(),
+    currents := #{coord() => {dir(), pos_integer()}},
+    turbulence := [coord()]
 }.
 
--export_type([board/0, coord/0, kind/0]).
+-export_type([board/0, coord/0, kind/0, dir/0]).
 
 %% --- construction -----------------------------------------------------
 
@@ -58,7 +62,13 @@ default() ->
       tiles => Tiles,
       spawns => Spawns,
       data_nodes => DataNodes,
-      extraction => Extraction}.
+      extraction => Extraction,
+      %% Currents drift a submarine after each register resolves. Placed on
+      %% open trench so they never point a sub straight into a wall gap.
+      currents => #{{7, 2} => {e, 1}, {8, 2} => {e, 1}, {9, 2} => {e, 1},
+                    {12, 9} => {n, 1}, {12, 8} => {n, 1}},
+      %% Turbulence spins a submarine 90 degrees clockwise on entry.
+      turbulence => [{8, 6}]}.
 
 %% Interior wall segments creating the fork/serpentine feel. The vertical
 %% walls alternately attach to the top and bottom border, each leaving a
@@ -113,6 +123,15 @@ dims(Board) ->
 spawns(Board) ->
     maps:get(spawns, Board).
 
+%% @doc The current on a tile, or `none`. A current is `{Direction, Strength}`.
+-spec current_at(board(), coord()) -> {dir(), pos_integer()} | none.
+current_at(Board, Coord) ->
+    maps:get(Coord, maps:get(currents, Board, #{}), none).
+
+-spec turbulence_at(board(), coord()) -> boolean().
+turbulence_at(Board, Coord) ->
+    lists:member(Coord, maps:get(turbulence, Board, [])).
+
 %% --- serialization ----------------------------------------------------
 
 %% @doc Serialize the whole board for the client as rows of single-char
@@ -125,7 +144,23 @@ to_json(Board) ->
     #{<<"width">> => W,
       <<"height">> => H,
       <<"grid">> => Grid,
-      <<"legend">> => legend()}.
+      <<"legend">> => legend(),
+      <<"currents">> => currents_json(Board),
+      <<"turbulence">> => [xy(C) || C <- maps:get(turbulence, Board, [])]}.
+
+currents_json(Board) ->
+    [begin
+         {X, Y} = C,
+         #{<<"x">> => X, <<"y">> => Y,
+           <<"dir">> => dir_bin(Dir), <<"strength">> => Str}
+     end || {C, {Dir, Str}} <- maps:to_list(maps:get(currents, Board, #{}))].
+
+xy({X, Y}) -> #{<<"x">> => X, <<"y">> => Y}.
+
+dir_bin(n) -> <<"N">>;
+dir_bin(e) -> <<"E">>;
+dir_bin(s) -> <<"S">>;
+dir_bin(w) -> <<"W">>.
 
 row_bin(Y, Board, W) ->
     list_to_binary([kind_char(tile_at(Board, {X, Y})) || X <- lists:seq(0, W - 1)]).

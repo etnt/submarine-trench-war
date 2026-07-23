@@ -19,10 +19,12 @@
 
 -export([start_link/2]).
 -export([join/4, reconnect/3, leave/2, set_ready/3, start_game/2]).
+-export([program_registers/3, lock_registers/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(COLORS, [<<"#3cf">>, <<"#f83">>, <<"#6c6">>, <<"#c6f">>]).
 -define(START_HULL, 10).
+-define(REGISTERS, 5).
 
 -record(state, {
     room_code :: binary(),
@@ -33,7 +35,10 @@
     join_order = [] :: [binary()],
     players = #{} :: #{binary() => map()},
     board :: stw_board:board(),
-    subs = #{} :: #{binary() => map()}
+    subs = #{} :: #{binary() => map()},
+    round = 0 :: non_neg_integer(),
+    programs = #{} :: #{binary() => [binary()]},
+    locked = [] :: [binary()]
 }).
 
 %% --- API --------------------------------------------------------------
@@ -66,6 +71,18 @@ set_ready(GamePid, PlayerId, Ready) ->
 start_game(GamePid, PlayerId) ->
     gen_server:call(GamePid, {start_game, PlayerId}).
 
+%% @doc Submit an ordered list of 5 navigation card kinds for the round.
+-spec program_registers(pid(), binary(), [binary()]) ->
+    ok | {error, atom()}.
+program_registers(GamePid, PlayerId, Cards) ->
+    gen_server:call(GamePid, {program, PlayerId, Cards}).
+
+%% @doc Lock in the current program; when everyone has locked the round
+%% resolves.
+-spec lock_registers(pid(), binary()) -> ok | {error, atom()}.
+lock_registers(GamePid, PlayerId) ->
+    gen_server:call(GamePid, {lock, PlayerId}).
+
 %% --- gen_server -------------------------------------------------------
 
 init({RoomCode, Opts}) ->
@@ -96,7 +113,9 @@ handle_call({reconnect, PlayerId, WsPid}, _From, S) ->
             S1 = attach_ws(PlayerId, WsPid, S),
             case S1#state.phase of
                 playing ->
-                    push(WsPid, <<"game_started">>, game_started_payload(S1));
+                    push(WsPid, <<"game_started">>, game_started_payload(S1)),
+                    push(WsPid, <<"game_state">>, game_state_payload(S1)),
+                    push(WsPid, <<"round_started">>, round_started_payload(S1));
                 lobby ->
                     ok
             end,
@@ -118,11 +137,36 @@ handle_call({set_ready, PlayerId, Ready}, _From, S) ->
 handle_call({start_game, PlayerId}, _From, S) ->
     case PlayerId =:= S#state.host_id of
         true ->
-            S1 = S#state{phase = playing, subs = place_subs(S)},
+            S1 = S#state{phase = playing, subs = place_subs(S),
+                         round = 1, programs = #{}, locked = []},
             broadcast(S1, <<"game_started">>, game_started_payload(S1)),
+            broadcast(S1, <<"round_started">>, round_started_payload(S1)),
             {reply, ok, S1};
         false ->
             {reply, {error, not_host}, S}
+    end;
+handle_call({program, PlayerId, Cards}, _From, S) ->
+    case validate_program(PlayerId, Cards, S) of
+        ok ->
+            S1 = S#state{programs = maps:put(PlayerId, Cards, S#state.programs)},
+            {reply, ok, S1};
+        {error, _} = Err ->
+            {reply, Err, S}
+    end;
+handle_call({lock, PlayerId}, _From, S) ->
+    case S#state.phase =:= playing andalso maps:is_key(PlayerId, S#state.subs) of
+        false ->
+            {reply, {error, not_in_game}, S};
+        true ->
+            case maps:is_key(PlayerId, S#state.programs) of
+                false ->
+                    {reply, {error, no_program}, S};
+                true ->
+                    Locked = lists:usort([PlayerId | S#state.locked]),
+                    S1 = S#state{locked = Locked},
+                    broadcast(S1, <<"player_locked">>, locked_payload(S1, PlayerId)),
+                    {reply, ok, maybe_resolve(S1)}
+            end
     end;
 handle_call(_Req, _From, S) ->
     {reply, {error, unknown_request}, S}.
@@ -248,6 +292,60 @@ game_started_payload(S) ->
       <<"room_code">> => S#state.room_code,
       <<"board">> => stw_board:to_json(S#state.board),
       <<"submarines">> => submarines_json(S)}.
+
+round_started_payload(S) ->
+    #{<<"round">> => S#state.round,
+      <<"registers">> => ?REGISTERS,
+      <<"cards">> => stw_engine:card_kinds()}.
+
+game_state_payload(S) ->
+    #{<<"round">> => S#state.round,
+      <<"submarines">> => submarines_json(S)}.
+
+locked_payload(S, PlayerId) ->
+    #{<<"player_id">> => PlayerId,
+      <<"locked">> => length(S#state.locked),
+      <<"total">> => map_size(S#state.subs)}.
+
+round_result_payload(S, Phases) ->
+    #{<<"round">> => S#state.round,
+      <<"phases">> => Phases,
+      <<"submarines">> => submarines_json(S)}.
+
+%% --- round resolution -------------------------------------------------
+
+validate_program(PlayerId, Cards, S) ->
+    IsPlaying = S#state.phase =:= playing,
+    Seated = maps:is_key(PlayerId, S#state.subs),
+    if
+        not IsPlaying -> {error, not_in_game};
+        not Seated -> {error, not_in_game};
+        length(Cards) =/= ?REGISTERS -> {error, invalid_register};
+        true ->
+            case lists:all(fun stw_engine:valid_card/1, Cards) of
+                true -> ok;
+                false -> {error, invalid_register}
+            end
+    end.
+
+%% Resolve the round once every seated player has locked in.
+maybe_resolve(S) ->
+    Seated = lists:sort(maps:keys(S#state.subs)),
+    case Seated =/= [] andalso lists:sort(S#state.locked) =:= Seated of
+        true -> resolve_round(S);
+        false -> S
+    end.
+
+resolve_round(S) ->
+    {Subs2, Phases} =
+        stw_engine:resolve_round(S#state.board, S#state.subs, S#state.programs),
+    S1 = S#state{subs = Subs2},
+    broadcast(S1, <<"round_result">>, round_result_payload(S1, Phases)),
+    %% Advance to the next round and invite fresh programs.
+    S2 = S1#state{round = S1#state.round + 1, programs = #{}, locked = []},
+    broadcast(S2, <<"round_started">>, round_started_payload(S2)),
+    broadcast(S2, <<"game_state">>, game_state_payload(S2)),
+    S2.
 
 submarines_json(S) ->
     [sub_json(Idx, Id, S)

@@ -148,12 +148,41 @@
       min-height: 1.2em;
       margin-top: 8px;
     }
+
+    /* --- register programming --- */
+    #program { margin-bottom: 4px; }
+    .prog-head {
+      display: flex; justify-content: space-between; align-items: baseline;
+      font-size: 0.9rem; color: var(--accent); margin-bottom: 8px;
+    }
+    .slots { display: flex; gap: 8px; margin-bottom: 12px; }
+    .slot {
+      flex: 1; aspect-ratio: 3 / 4; min-height: 56px;
+      border: 1px dashed var(--accent-dim); border-radius: 8px;
+      background: #02090f; color: var(--text);
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: 2px; cursor: pointer;
+      font-size: 0.72rem; text-align: center; padding: 4px;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .slot .idx { color: var(--muted); font-size: 0.62rem; }
+    .slot.filled { border-style: solid; border-color: var(--accent); }
+    .slot .glyph { font-size: 1.1rem; line-height: 1; }
+    .slot.locked { opacity: 0.7; cursor: default; }
+    .palette { display: flex; flex-wrap: wrap; gap: 6px; }
+    .card-btn {
+      font-size: 0.74rem; padding: 6px 8px; line-height: 1.15;
+      display: flex; flex-direction: column; align-items: center; gap: 1px;
+      min-width: 60px;
+    }
+    .card-btn .glyph { font-size: 1rem; }
+    #program.locked .palette, #program.locked .slots { pointer-events: none; opacity: 0.6; }
   </style>
 </head>
 <body>
   <header>
     <h1>Submarine Trench War</h1>
-    <div class="subtitle">Phase 2 &mdash; board &amp; submarines</div>
+    <div class="subtitle">Phase 3 &mdash; program &amp; resolve</div>
   </header>
 
   <main>
@@ -205,10 +234,25 @@
 
     <!-- GAME: board + fleet -->
     <div class="panel hidden" id="viewGame">
-      <h2>Match In Progress</h2>
+      <h2>Match In Progress <span id="roundTag" class="badge">Round 1</span></h2>
       <canvas id="board" width="600" height="360"></canvas>
-      <p class="subtitle">Programming UI arrives in Phase 3.</p>
-      <ul class="players" id="gamePlayers"></ul>
+
+      <!-- Register programming -->
+      <div id="program">
+        <div class="prog-head">
+          <span>Program your 5 registers</span>
+          <span id="lockTally" class="subtitle">0 / 0 locked</span>
+        </div>
+        <div class="slots" id="slots"></div>
+        <div class="palette" id="palette"></div>
+        <div class="controls" style="margin-top: 10px;">
+          <button id="btnClear">Clear</button>
+          <button id="btnLock" class="primary" disabled>Lock In</button>
+          <span id="progToast" class="subtitle" style="flex:1"></span>
+        </div>
+      </div>
+
+      <ul class="players" id="gamePlayers" style="margin-top: 12px;"></ul>
       <div class="controls" style="margin-top: 12px;">
         <button id="btnLeaveGame">Leave Match</button>
       </div>
@@ -238,7 +282,25 @@
       lobby: null,      // last lobby_state payload
       board: null,      // { width, height, grid, legend }
       subs: [],         // [{ player_id, color, x, y, facing, depth, hull, ... }]
+      round: 0,         // current round number
+      cards: [],        // available card kinds this round
+      program: [],      // my chosen kinds (up to 5)
+      locked: false,    // have I locked this round?
+      lockTally: null,  // { locked, total } from player_locked
+      anim: null,       // active replay animation, or null
     };
+
+    // Navigation card metadata: label + glyph for the UI.
+    const CARD_META = {
+      ahead_standard: { label: "Ahead 1", glyph: "\u2191" },
+      ahead_flank:    { label: "Ahead 2", glyph: "\u21c8" },
+      reverse:        { label: "Reverse", glyph: "\u2193" },
+      port_bank:      { label: "Port",    glyph: "\u21b0" },
+      starboard_bank: { label: "Starb'd", glyph: "\u21b1" },
+      dive:           { label: "Dive",    glyph: "\u2b07" },
+      surface:        { label: "Surface", glyph: "\u2b06" },
+    };
+    const REGISTERS = 5;
 
     const $ = (id) => document.getElementById(id);
     const el = {
@@ -252,6 +314,10 @@
       gamePlayers: $("gamePlayers"), btnLeaveGame: $("btnLeaveGame"),
       homeToast: $("homeToast"), lobbyToast: $("lobbyToast"),
       canvas: $("board"),
+      roundTag: $("roundTag"), lockTally: $("lockTally"),
+      slots: $("slots"), palette: $("palette"),
+      btnClear: $("btnClear"), btnLock: $("btnLock"),
+      progToast: $("progToast"), program: $("program"),
     };
     const ctx = el.canvas.getContext("2d");
 
@@ -319,6 +385,10 @@
         case "game_joined": onGameJoined(p); break;
         case "lobby_state": onLobbyState(p); break;
         case "game_started": onGameStarted(p); break;
+        case "round_started": onRoundStarted(p); break;
+        case "player_locked": onPlayerLocked(p); break;
+        case "round_result": onRoundResult(p); break;
+        case "game_state": onGameState(p); break;
         case "error": onError(p); break;
         case "pong": break;
         default: break;
@@ -361,6 +431,43 @@
       renderGamePlayers({ players: p.submarines });
       setView("game");
       log("sys", "Game started.");
+    }
+
+    function onRoundStarted(p) {
+      state.round = p.round || state.round;
+      state.cards = p.cards || state.cards;
+      state.program = [];
+      state.locked = false;
+      state.anim = null;
+      el.roundTag.textContent = "Round " + state.round;
+      el.program.classList.remove("locked");
+      renderPalette();
+      renderSlots();
+      el.progToast.textContent = "";
+      log("sys", "Round " + state.round + " \u2014 program your registers.");
+    }
+
+    function onPlayerLocked(p) {
+      state.lockTally = { locked: p.locked, total: p.total };
+      el.lockTally.textContent = `${p.locked} / ${p.total} locked`;
+    }
+
+    function onRoundResult(p) {
+      // Replay the phases, then settle on the authoritative final subs.
+      const finalSubs = p.submarines || state.subs;
+      startReplay(p.phases || [], finalSubs);
+      log("sys", "Round " + p.round + " resolved (" +
+        (p.phases ? p.phases.length : 0) + " phases).");
+    }
+
+    function onGameState(p) {
+      state.round = p.round || state.round;
+      if (p.submarines) {
+        // Don't clobber an in-flight replay; it sets subs at the end.
+        if (!state.anim) state.subs = p.submarines;
+        renderGamePlayers({ players: p.submarines });
+      }
+      el.roundTag.textContent = "Round " + state.round;
     }
 
     function onError(p) {
@@ -426,6 +533,68 @@
       });
     }
 
+    // --- register programming -------------------------------------------
+    function renderPalette() {
+      el.palette.innerHTML = "";
+      state.cards.forEach((kind) => {
+        const meta = CARD_META[kind] || { label: kind, glyph: "?" };
+        const b = document.createElement("button");
+        b.className = "card-btn";
+        b.innerHTML =
+          `<span class="glyph">${meta.glyph}</span><span>${meta.label}</span>`;
+        b.title = kind;
+        b.addEventListener("click", () => addCard(kind));
+        el.palette.appendChild(b);
+      });
+    }
+
+    function renderSlots() {
+      el.slots.innerHTML = "";
+      for (let i = 0; i < REGISTERS; i++) {
+        const kind = state.program[i];
+        const slot = document.createElement("div");
+        slot.className = "slot" + (kind ? " filled" : "") +
+          (state.locked ? " locked" : "");
+        if (kind) {
+          const meta = CARD_META[kind] || { label: kind, glyph: "?" };
+          slot.innerHTML = `<span class="idx">${i + 1}</span>` +
+            `<span class="glyph">${meta.glyph}</span><span>${meta.label}</span>`;
+          if (!state.locked) slot.addEventListener("click", () => removeCard(i));
+        } else {
+          slot.innerHTML = `<span class="idx">${i + 1}</span><span>&middot;</span>`;
+        }
+        el.slots.appendChild(slot);
+      }
+      updateLockButton();
+    }
+
+    function addCard(kind) {
+      if (state.locked) return;
+      if (state.program.length >= REGISTERS) return;
+      state.program.push(kind);
+      renderSlots();
+    }
+
+    function removeCard(i) {
+      if (state.locked) return;
+      state.program.splice(i, 1);
+      renderSlots();
+    }
+
+    function updateLockButton() {
+      el.btnLock.disabled = state.locked || state.program.length !== REGISTERS;
+    }
+
+    function lockRegisters() {
+      if (state.program.length !== REGISTERS || state.locked) return;
+      send("program_registers", { registers: state.program.slice() });
+      send("lock_registers", {});
+      state.locked = true;
+      el.program.classList.add("locked");
+      el.progToast.textContent = "Locked. Waiting for the fleet\u2026";
+      renderSlots();
+    }
+
     // --- board rendering -----------------------------------------------
     const TILE = {
       "#": { fill: "#0a2233" },   // wall
@@ -459,7 +628,10 @@
           drawFeature(g, ch, px, py, size, t);
         }
       }
-      state.subs.forEach((s) => drawSub(g, s, ox, oy, size, t));
+
+      const subs = state.anim ? animatedSubs(t) : state.subs;
+      if (!state.anim) drawGhostPath(g, ox, oy, size);
+      subs.forEach((s) => drawSub(g, s, ox, oy, size, t));
     }
 
     function drawFeature(g, ch, px, py, size, t) {
@@ -545,6 +717,129 @@
       g.globalAlpha = 1;
     }
 
+    // --- ghost path preview & phase replay ------------------------------
+    const DIR_VEC = { N: [0, -1], E: [1, 0], S: [0, 1], W: [-1, 0] };
+    const ROT_L = { N: "W", W: "S", S: "E", E: "N" };
+    const ROT_R = { N: "E", E: "S", S: "W", W: "N" };
+    const PHASE_MS = 380;
+
+    function isWall(x, y) {
+      const b = state.board;
+      if (!b || !b.grid) return true;
+      if (x < 0 || y < 0 || x >= b.width || y >= b.height) return true;
+      return ((b.grid[y] || "")[x] || "#") === "#";
+    }
+
+    function mySub() {
+      return state.subs.find((s) => s.player_id === state.playerId) || null;
+    }
+
+    // Predict my sub's path this round by applying my program locally.
+    // Ignores other subs and currents (walls still block); preview only.
+    function predictPath(sub, program) {
+      let x = sub.x, y = sub.y, f = sub.facing;
+      const pts = [{ x, y }];
+      for (const kind of program) {
+        if (kind === "port_bank") { f = ROT_L[f]; }
+        else if (kind === "starboard_bank") { f = ROT_R[f]; }
+        else if (kind === "dive" || kind === "surface") { /* no move */ }
+        else {
+          const steps = kind === "ahead_flank" ? 2 : 1;
+          let [dx, dy] = DIR_VEC[f];
+          if (kind === "reverse") { dx = -dx; dy = -dy; }
+          for (let s = 0; s < steps; s++) {
+            if (isWall(x + dx, y + dy)) break;
+            x += dx; y += dy;
+          }
+        }
+        pts.push({ x, y });
+      }
+      return pts;
+    }
+
+    function drawGhostPath(g, ox, oy, size) {
+      if (state.locked || state.program.length === 0) return;
+      const me = mySub();
+      if (!me) return;
+      const pts = predictPath(me, state.program);
+      const cx = (p) => ox + p.x * size + size / 2;
+      const cy = (p) => oy + p.y * size + size / 2;
+      g.save();
+      g.strokeStyle = (me.color || "#3cf");
+      g.globalAlpha = 0.4;
+      g.setLineDash([4, 4]);
+      g.lineWidth = 2;
+      g.beginPath();
+      g.moveTo(cx(pts[0]), cy(pts[0]));
+      pts.forEach((p) => g.lineTo(cx(p), cy(p)));
+      g.stroke();
+      g.setLineDash([]);
+      pts.forEach((p, i) => {
+        g.globalAlpha = 0.25 + 0.5 * (i / pts.length);
+        g.fillStyle = (me.color || "#3cf");
+        g.beginPath();
+        g.arc(cx(p), cy(p), size * 0.1, 0, Math.PI * 2);
+        g.fill();
+      });
+      g.restore();
+    }
+
+    // Build keyframes and start an interpolated replay of the round.
+    function startReplay(phases, finalSubs) {
+      const colorById = {};
+      state.subs.forEach((s) => { colorById[s.player_id] = s.color; });
+      (finalSubs || []).forEach((s) => {
+        if (s.color) colorById[s.player_id] = s.color;
+      });
+      const frames = [snapshotSubs(state.subs)]
+        .concat(phases.map((ph) => ph.submarines || []));
+      state.anim = { frames, finalSubs, colorById, t0: null };
+    }
+
+    function snapshotSubs(subs) {
+      return subs.map((s) => ({
+        player_id: s.player_id, x: s.x, y: s.y,
+        facing: s.facing, depth: s.depth,
+      }));
+    }
+
+    function indexById(list) {
+      const m = {};
+      (list || []).forEach((s) => { m[s.player_id] = s; });
+      return m;
+    }
+
+    // Interpolated sub positions for the current replay time.
+    function animatedSubs(t) {
+      const a = state.anim;
+      if (a.t0 === null) a.t0 = t;
+      const elapsed = t - a.t0;
+      const seg = Math.floor(elapsed / PHASE_MS);
+      if (seg >= a.frames.length - 1) {
+        state.subs = a.finalSubs || state.subs;
+        state.anim = null;
+        renderGamePlayers({ players: state.subs });
+        return state.subs;
+      }
+      const frac = (elapsed % PHASE_MS) / PHASE_MS;
+      const from = indexById(a.frames[seg]);
+      const to = indexById(a.frames[seg + 1]);
+      const out = [];
+      Object.keys(to).forEach((id) => {
+        const b = to[id];
+        const aa = from[id] || b;
+        out.push({
+          player_id: id,
+          x: aa.x + (b.x - aa.x) * frac,
+          y: aa.y + (b.y - aa.y) * frac,
+          facing: frac < 0.5 ? aa.facing : b.facing,
+          depth: frac < 0.5 ? aa.depth : b.depth,
+          color: a.colorById[id] || "#3cf",
+        });
+      });
+      return out;
+    }
+
     function tick(t) {
       if (state.view === "game") renderBoard(t);
       requestAnimationFrame(tick);
@@ -580,11 +875,19 @@
     el.btnStart.addEventListener("click", () => send("start_game", {}));
     el.btnLeave.addEventListener("click", leaveRoom);
     el.btnLeaveGame.addEventListener("click", leaveRoom);
+    el.btnClear.addEventListener("click", () => {
+      if (state.locked) return;
+      state.program = [];
+      renderSlots();
+    });
+    el.btnLock.addEventListener("click", lockRegisters);
 
     function leaveRoom() {
       send("leave_game", {});
       state.roomCode = null; state.isHost = false; state.lobby = null;
       state.board = null; state.subs = [];
+      state.round = 0; state.program = []; state.locked = false;
+      state.anim = null; state.lockTally = null;
       setView("home");
     }
 

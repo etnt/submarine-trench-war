@@ -140,30 +140,36 @@ Toggle ready state in the lobby.
 Host-only request to start the match early.
 
 ### `program_registers`
-Non-binding working selection (used to drive ghost-path preview and to persist
-in-progress choices). May be sent multiple times before locking.
+Working selection of 5 ordered navigation cards for the round. May be sent
+multiple times before locking (the server keeps the latest). In this phase
+`registers` are card **kinds** (see `deal_hand` for the kind list); card
+drafting with per-card IDs arrives with Phase 4.
 
 ```json
 {
   "type": "program_registers",
   "payload": {
-    "registers": ["card_7", "card_2", "card_9", "card_1", "card_4"]
+    "registers": ["ahead_standard", "port_bank", "ahead_flank", "dive", "reverse"]
   }
 }
 ```
 
+Errors: `invalid_register` if the list is not exactly 5 cards or contains an
+unknown kind; `not_in_game` if the sender has no submarine.
+
 ### `lock_registers`
-Final, binding submission of 5 ordered cards for the round. Card IDs must be
-from the player's currently dealt hand.
+Binding lock of the most recently programmed registers. Takes no payload — the
+program submitted via `program_registers` is what gets locked. Once every
+seated player has locked, the round resolves.
 
 ```json
 {
   "type": "lock_registers",
-  "payload": {
-    "registers": ["card_7", "card_2", "card_9", "card_1", "card_4"]
-  }
+  "payload": {}
 }
 ```
+
+Errors: `invalid_register` if no program has been submitted yet.
 
 ### `set_sonar_mode`
 Choose active or passive sonar for the upcoming resolution.
@@ -284,12 +290,19 @@ The current phase sends the full board to every player; fog of war (Phase 6)
 will trim it to visible tiles via `game_state`.
 
 ### `round_started`
-Begins a new round; announces round number and hand size.
+Begins a new round; announces the round number, the number of registers, and
+the navigation card kinds available to program. (Card drafting / `deal_hand`
+arrives in Phase 4; for now players may program any of these kinds.)
 
 ```json
 {
   "type": "round_started",
-  "payload": { "round": 3, "hand_size": 8 }
+  "payload": {
+    "round": 3,
+    "registers": 5,
+    "cards": ["ahead_standard", "ahead_flank", "reverse",
+              "port_bank", "starboard_bank", "dive", "surface"]
+  }
 }
 ```
 
@@ -334,7 +347,7 @@ Broadcast when a player locks their registers (no card contents revealed).
 ```json
 {
   "type": "player_locked",
-  "payload": { "player_id": "p_cd34", "locked_count": 2, "total": 4 }
+  "payload": { "player_id": "p_cd34", "locked": 2, "total": 4 }
 }
 ```
 
@@ -355,6 +368,13 @@ All players are locked (or the timer expired). Auto-filled players are flagged.
 Emitted once per register (5 per round), describing everything that happened in
 that phase so the client can animate a faithful replay. `events` is an ordered
 list applied in sequence.
+
+> **Phase 3 note:** rather than streaming five separate `phase_event`
+> messages, the current server delivers all five phases in one `round_result`
+> (see its `phases` array below). Each phase carries a full submarine snapshot
+> plus an `events` list (`move` is inferred from the snapshot; explicit events
+> so far are `rotate`, `dive`, `surface`, `blocked`, `drift`, `turbulence`).
+> The richer per-event schema below is the target once combat lands.
 
 ```json
 {
@@ -390,6 +410,11 @@ list applied in sequence.
 ### `game_state`
 Authoritative per-player view snapshot. Sent after resolution and on reconnect.
 Only includes what the receiving player can currently see (fog of war).
+
+> **Phase 3 note:** fog of war is not implemented yet. The current server
+> sends `{ "round": N, "submarines": [ ...full sub_json... ] }` — the same
+> submarine shape as `game_started` — so every client sees all subs. The
+> fog-filtered shape below is the target for the visibility phase.
 
 ```json
 {
@@ -437,6 +462,37 @@ hit them with a sonar ping).
 
 ### `round_result`
 End-of-round summary after all 5 phases resolve.
+
+> **Phase 3 note:** the current server sends the resolved animation stream
+> here as a `phases` array (one entry per register, in order) plus the final
+> authoritative `submarines`. The `standings` summary below is the target for
+> later phases once hull/data matter.
+
+```json
+{
+  "type": "round_result",
+  "payload": {
+    "round": 3,
+    "phases": [
+      {
+        "register": 0,
+        "submarines": [
+          { "player_id": "p_ab12", "x": 3, "y": 2,
+            "facing": "E", "depth": "shallow" }
+        ],
+        "events": [ { "type": "blocked", "player_id": "p_cd34" } ]
+      }
+    ],
+    "submarines": [
+      { "player_id": "p_ab12", "display_name": "Nautilus", "color": "#3cf",
+        "x": 5, "y": 2, "facing": "E", "depth": "shallow",
+        "hull": 10, "data_collected": 0 }
+    ]
+  }
+}
+```
+
+The target end-of-round summary (later phases):
 
 ```json
 {

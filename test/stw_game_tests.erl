@@ -15,7 +15,8 @@ lobby_flow_test_() ->
         [ fun create_and_join/0,
           fun room_not_found/0,
           fun reconnect_resumes_room/0,
-          fun host_starts_game/0 ]
+          fun host_starts_game/0,
+          fun full_round_resolves/0 ]
     end}.
 
 setup() ->
@@ -94,6 +95,46 @@ host_starts_game() ->
          ?assertEqual(10, maps:get(<<"hull">>, Sub)),
          ?assertEqual(<<"shallow">>, maps:get(<<"depth">>, Sub))
      end || Sub <- Subs].
+
+%% Starting broadcasts round_started; both players program + lock; the round
+%% resolves into a round_result carrying 5 phases and final submarines.
+full_round_resolves() ->
+    flush(),
+    {P1, T1, undefined} = stw_lobby:hello(undefined, <<"Skipper">>),
+    {ok, _Room, GamePid} = stw_lobby:create_game(T1, #{}),
+    {ok, true} = stw_game:join(GamePid, P1, <<"Skipper">>, self()),
+    {P2, _T2, _} = stw_lobby:hello(undefined, <<"Mate">>),
+    {ok, false} = stw_game:join(GamePid, P2, <<"Mate">>, self()),
+    flush(),
+    ok = stw_game:start_game(GamePid, P1),
+    RS = expect_push(<<"round_started">>),
+    ?assertEqual(1, maps:get(<<"round">>, RS)),
+    ?assertEqual(5, maps:get(<<"registers">>, RS)),
+
+    Program = [<<"ahead_standard">>, <<"port_bank">>, <<"ahead_standard">>,
+               <<"starboard_bank">>, <<"dive">>],
+    ok = stw_game:program_registers(GamePid, P1, Program),
+    ok = stw_game:program_registers(GamePid, P2, Program),
+    %% a bad program is rejected without resolving
+    ?assertEqual({error, invalid_register},
+                 stw_game:program_registers(GamePid, P1, [<<"nope">>])),
+    flush(),
+    ok = stw_game:lock_registers(GamePid, P1),
+    _ = expect_push(<<"player_locked">>),
+    ok = stw_game:lock_registers(GamePid, P2),
+
+    RR = expect_push(<<"round_result">>),
+    ?assertEqual(1, maps:get(<<"round">>, RR)),
+    Phases = maps:get(<<"phases">>, RR),
+    ?assertEqual(5, length(Phases)),
+    [Ph0 | _] = Phases,
+    ?assertEqual(0, maps:get(<<"register">>, Ph0)),
+    ?assertEqual(2, length(maps:get(<<"submarines">>, Ph0))),
+    ?assertEqual(2, length(maps:get(<<"submarines">>, RR))),
+
+    %% after resolution a fresh round is announced
+    RS2 = expect_push(<<"round_started">>),
+    ?assertEqual(2, maps:get(<<"round">>, RS2)).
 
 %% --- helpers ----------------------------------------------------------
 

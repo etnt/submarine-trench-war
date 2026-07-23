@@ -146,9 +146,38 @@ dispatch(<<"leave_game">>, _P, Seq, State) ->
         {[], State#{game => undefined, room_code => undefined}}
     end);
 
+dispatch(<<"program_registers">>, P, Seq, State) ->
+    with_game(Seq, State, fun(GamePid, PlayerId) ->
+        Cards = maps:get(<<"registers">>, P, []),
+        case stw_game:program_registers(GamePid, PlayerId, Cards) of
+            ok ->
+                {[], State};
+            {error, Code} ->
+                reply(error_msg(Seq, program_error(Code),
+                                <<"Invalid program.">>), State)
+        end
+    end);
+
+dispatch(<<"lock_registers">>, _P, Seq, State) ->
+    with_game(Seq, State, fun(GamePid, PlayerId) ->
+        case stw_game:lock_registers(GamePid, PlayerId) of
+            ok ->
+                {[], State};
+            {error, Code} ->
+                reply(error_msg(Seq, program_error(Code),
+                                <<"Cannot lock registers.">>), State)
+        end
+    end);
+
 dispatch(_Type, _P, Seq, State) ->
     reply(error_msg(Seq, <<"unknown_type">>,
                     <<"Unrecognized message type.">>), State).
+
+%% Map a stw_game program/lock error to a protocol error code.
+program_error(invalid_register) -> <<"invalid_register">>;
+program_error(not_in_game) -> <<"not_in_game">>;
+program_error(no_program) -> <<"invalid_register">>;
+program_error(_) -> <<"internal_error">>.
 
 %% Run Fun with the current game pid + player id, or return not_in_game.
 with_game(Seq, State, Fun) ->

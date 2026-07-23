@@ -80,18 +80,18 @@ Goal: represent the trench map and submarine state on the server.
 
 Goal: the programmed-movement heart of the game, without combat yet.
 
-* [ ] Implement the navigation card set (Ahead Standard/Flank, Reverse,
+* [x] Implement the navigation card set (Ahead Standard/Flank, Reverse,
   Port/Starboard Bank, Dive/Surface).
-* [ ] Implement register programming: clients submit 5 ordered cards.
-* [ ] Build the deterministic resolution engine as a pure module:
-  * [ ] Execute all subs' current register simultaneously.
-  * [ ] Resolve movement conflicts (walls block, out-of-bounds).
-  * [ ] Apply currents (push 1-2 tiles, turbulence rotation).
-* [ ] Sequence all 5 registers per round on the server.
-* [ ] Emit a per-phase state delta / event stream to clients.
-* [ ] Client: card programming UI (drag/drop or click into 5 slots, lock in).
-* [ ] Client: animated phase replay (step through registers with movement).
-* [ ] Client: ghost path preview while programming.
+* [x] Implement register programming: clients submit 5 ordered cards.
+* [x] Build the deterministic resolution engine as a pure module:
+  * [x] Execute all subs' current register simultaneously.
+  * [x] Resolve movement conflicts (walls block, out-of-bounds).
+  * [x] Apply currents (push 1-2 tiles, turbulence rotation).
+* [x] Sequence all 5 registers per round on the server.
+* [x] Emit a per-phase state delta / event stream to clients.
+* [x] Client: card programming UI (drag/drop or click into 5 slots, lock in).
+* [x] Client: animated phase replay (step through registers with movement).
+* [x] Client: ghost path preview while programming.
 
 **Milestone:** Players program 5 cards; subs move and drift each round with
 animated replay. This is the first genuinely playable loop.
