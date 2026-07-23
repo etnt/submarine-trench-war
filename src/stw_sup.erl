@@ -1,8 +1,9 @@
 %%%-------------------------------------------------------------------
 %% @doc stw top-level supervisor.
 %%
-%% For Phase 0 this supervisor has no children. Game-session and lobby
-%% processes will be added in later phases.
+%% Starts the dynamic game-session supervisor and the lobby. The game
+%% supervisor must start first because the lobby spawns game sessions
+%% through it.
 %% @end
 %%%-------------------------------------------------------------------
 -module(stw_sup).
@@ -21,5 +22,18 @@ init([]) ->
     SupFlags = #{strategy => one_for_one,
                  intensity => 5,
                  period => 10},
-    ChildSpecs = [],
+    ChildSpecs = [
+        #{id => stw_game_sup,
+          start => {stw_game_sup, start_link, []},
+          restart => permanent,
+          shutdown => infinity,
+          type => supervisor,
+          modules => [stw_game_sup]},
+        #{id => stw_lobby,
+          start => {stw_lobby, start_link, []},
+          restart => permanent,
+          shutdown => 5000,
+          type => worker,
+          modules => [stw_lobby]}
+    ],
     {ok, {SupFlags, ChildSpecs}}.

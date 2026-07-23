@@ -11,6 +11,7 @@
       --accent: #3cf;
       --accent-dim: #1a6b82;
       --text: #cfe8f2;
+      --muted: #7fa6b8;
       --ok: #4caf50;
       --err: #e05555;
     }
@@ -25,10 +26,7 @@
       flex-direction: column;
       align-items: center;
     }
-    header {
-      text-align: center;
-      padding: 24px 16px 8px;
-    }
+    header { text-align: center; padding: 24px 16px 8px; }
     h1 {
       margin: 0;
       font-weight: 600;
@@ -51,12 +49,13 @@
       border-radius: 10px;
       padding: 16px;
     }
-    .status-row {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-size: 0.9rem;
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 1rem;
+      color: var(--accent);
+      font-weight: 600;
     }
+    .status-row { display: flex; align-items: center; gap: 10px; font-size: 0.9rem; }
     .dot {
       width: 12px; height: 12px; border-radius: 50%;
       background: var(--err);
@@ -64,13 +63,7 @@
       transition: background 0.2s;
     }
     .dot.connected { background: var(--ok); }
-    canvas {
-      width: 100%;
-      background: #02090f;
-      border-radius: 8px;
-      display: block;
-    }
-    .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     button {
       background: var(--accent-dim);
       color: var(--text);
@@ -83,13 +76,54 @@
     }
     button:hover:not(:disabled) { background: var(--accent); color: #02090f; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.primary { background: var(--accent); color: #02090f; font-weight: 600; }
+    input {
+      background: #02090f;
+      color: var(--text);
+      border: 1px solid var(--accent-dim);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 0.9rem;
+    }
+    input:focus { outline: 1px solid var(--accent); }
+    label { font-size: 0.85rem; color: var(--muted); display: block; margin-bottom: 4px; }
+    .field { margin-bottom: 12px; }
+    .hidden { display: none !important; }
+    .room-code {
+      font-family: "SF Mono", Menlo, Consolas, monospace;
+      font-size: 1.4rem;
+      letter-spacing: 0.2em;
+      color: var(--accent);
+    }
+    ul.players { list-style: none; margin: 0; padding: 0; }
+    ul.players li {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      background: #02090f;
+      margin-bottom: 6px;
+    }
+    .badge {
+      font-size: 0.7rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: var(--accent-dim);
+      color: var(--text);
+    }
+    .badge.host { background: #b8860b; color: #02090f; }
+    .badge.ready { background: var(--ok); color: #02090f; }
+    .badge.offline { background: #444; color: #aaa; }
+    .pname { flex: 1; }
+    .swatch { width: 12px; height: 12px; border-radius: 3px; }
     #log {
       font-family: "SF Mono", Menlo, Consolas, monospace;
-      font-size: 0.78rem;
+      font-size: 0.74rem;
       background: #02090f;
       border-radius: 8px;
       padding: 12px;
-      height: 200px;
+      height: 150px;
       overflow-y: auto;
       white-space: pre-wrap;
       line-height: 1.5;
@@ -98,12 +132,18 @@
     .log-out { color: #8fd694; }
     .log-sys { color: #b0b0b0; }
     .log-err { color: var(--err); }
+    .toast {
+      color: var(--err);
+      font-size: 0.85rem;
+      min-height: 1.2em;
+      margin-top: 8px;
+    }
   </style>
 </head>
 <body>
   <header>
     <h1>Submarine Trench War</h1>
-    <div class="subtitle">Phase 0 &mdash; connection check</div>
+    <div class="subtitle">Phase 1 &mdash; lobby &amp; sessions</div>
   </header>
 
   <main>
@@ -111,21 +151,60 @@
       <div class="status-row">
         <span class="dot" id="statusDot"></span>
         <span id="statusText">Disconnected</span>
+        <span style="flex:1"></span>
+        <span id="whoami" class="subtitle"></span>
+      </div>
+    </div>
+
+    <!-- HOME: create or join -->
+    <div class="panel" id="viewHome">
+      <h2>Set Sail</h2>
+      <div class="field">
+        <label for="nameInput">Captain name</label>
+        <input id="nameInput" type="text" placeholder="Nautilus" maxlength="20" />
+      </div>
+      <div class="controls" style="margin-bottom: 14px;">
+        <button id="btnCreate" class="primary">Create Room</button>
+      </div>
+      <div class="field">
+        <label for="roomInput">Join with room code</label>
+        <div class="controls">
+          <input id="roomInput" type="text" placeholder="REEF12" maxlength="6"
+                 style="text-transform: uppercase;" />
+          <button id="btnJoin">Join Room</button>
+        </div>
+      </div>
+      <div class="toast" id="homeToast"></div>
+    </div>
+
+    <!-- LOBBY: room + players -->
+    <div class="panel hidden" id="viewLobby">
+      <h2>Wardroom</h2>
+      <div class="field">
+        <label>Room code (share with your fleet)</label>
+        <span class="room-code" id="roomCode">------</span>
+      </div>
+      <ul class="players" id="playerList"></ul>
+      <div class="controls" style="margin-top: 12px;">
+        <button id="btnReady">Ready Up</button>
+        <button id="btnStart" class="primary hidden">Dive! (Start)</button>
+        <button id="btnLeave">Leave</button>
+      </div>
+      <div class="toast" id="lobbyToast"></div>
+    </div>
+
+    <!-- GAME placeholder -->
+    <div class="panel hidden" id="viewGame">
+      <h2>Match In Progress</h2>
+      <p class="subtitle">The board and programming UI arrive in Phase 2-3.</p>
+      <ul class="players" id="gamePlayers"></ul>
+      <div class="controls" style="margin-top: 12px;">
+        <button id="btnLeaveGame">Leave Match</button>
       </div>
     </div>
 
     <div class="panel">
-      <canvas id="board" width="688" height="240"></canvas>
-    </div>
-
-    <div class="panel controls">
-      <button id="btnConnect">Connect</button>
-      <button id="btnPing" disabled>Send Ping</button>
-      <button id="btnEcho" disabled>Send Echo</button>
-      <button id="btnDisconnect" disabled>Disconnect</button>
-    </div>
-
-    <div class="panel">
+      <h2>Console</h2>
       <div id="log" aria-live="polite"></div>
     </div>
   </main>
@@ -133,47 +212,53 @@
   <script>
     "use strict";
 
+    const LS_TOKEN = "stw_session_token";
+    const LS_NAME = "stw_display_name";
+
     const state = {
       ws: null,
       seq: 0,
       connected: false,
+      playerId: null,
+      token: localStorage.getItem(LS_TOKEN) || null,
+      roomCode: null,
+      isHost: false,
+      view: "home",     // home | lobby | game
+      lobby: null,      // last lobby_state payload
     };
 
+    const $ = (id) => document.getElementById(id);
     const el = {
-      dot: document.getElementById("statusDot"),
-      statusText: document.getElementById("statusText"),
-      log: document.getElementById("log"),
-      btnConnect: document.getElementById("btnConnect"),
-      btnPing: document.getElementById("btnPing"),
-      btnEcho: document.getElementById("btnEcho"),
-      btnDisconnect: document.getElementById("btnDisconnect"),
-      canvas: document.getElementById("board"),
+      dot: $("statusDot"), statusText: $("statusText"), whoami: $("whoami"),
+      log: $("log"),
+      viewHome: $("viewHome"), viewLobby: $("viewLobby"), viewGame: $("viewGame"),
+      nameInput: $("nameInput"), roomInput: $("roomInput"),
+      btnCreate: $("btnCreate"), btnJoin: $("btnJoin"),
+      roomCode: $("roomCode"), playerList: $("playerList"),
+      btnReady: $("btnReady"), btnStart: $("btnStart"), btnLeave: $("btnLeave"),
+      gamePlayers: $("gamePlayers"), btnLeaveGame: $("btnLeaveGame"),
+      homeToast: $("homeToast"), lobbyToast: $("lobbyToast"),
     };
 
-    const ctx = el.canvas.getContext("2d");
-
+    // --- logging --------------------------------------------------------
     function log(kind, text) {
       const line = document.createElement("div");
       line.className = "log-" + kind;
-      const time = new Date().toLocaleTimeString();
-      line.textContent = `[${time}] ${text}`;
+      line.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
       el.log.appendChild(line);
       el.log.scrollTop = el.log.scrollHeight;
+    }
+
+    // --- connection -----------------------------------------------------
+    function wsUrl() {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      return `${proto}//${location.host}/ws`;
     }
 
     function setConnected(connected) {
       state.connected = connected;
       el.dot.classList.toggle("connected", connected);
       el.statusText.textContent = connected ? "Connected" : "Disconnected";
-      el.btnConnect.disabled = connected;
-      el.btnPing.disabled = !connected;
-      el.btnEcho.disabled = !connected;
-      el.btnDisconnect.disabled = !connected;
-    }
-
-    function wsUrl() {
-      const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      return `${proto}//${location.host}/ws`;
     }
 
     function connect() {
@@ -181,100 +266,192 @@
       log("sys", `Connecting to ${wsUrl()} ...`);
       const ws = new WebSocket(wsUrl());
       state.ws = ws;
-
       ws.onopen = () => {
         setConnected(true);
-        log("sys", "WebSocket open.");
-        send("hello", { protocol_version: 1, display_name: "Nautilus" });
+        const name = el.nameInput.value.trim()
+          || localStorage.getItem(LS_NAME) || "Captain";
+        send("hello", { protocol_version: 1, display_name: name,
+                        session_token: state.token || undefined });
       };
-      ws.onmessage = (event) => {
-        log("in", "\u2190 " + event.data);
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === "pong") drawSonar();
-        } catch (_) { /* ignore */ }
-      };
+      ws.onmessage = (e) => onMessage(e.data);
       ws.onerror = () => log("err", "WebSocket error.");
       ws.onclose = () => {
         setConnected(false);
         state.ws = null;
-        log("sys", "WebSocket closed.");
+        log("sys", "Disconnected. Reconnecting in 1s ...");
+        setTimeout(connect, 1000);
       };
-    }
-
-    function disconnect() {
-      if (state.ws) state.ws.close();
     }
 
     function send(type, payload) {
       if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
-        log("err", "Not connected.");
-        return;
+        log("err", "Not connected."); return;
       }
-      const msg = {
-        type,
-        seq: state.seq++,
-        ts: Date.now(),
-        payload: payload || {},
-      };
-      const data = JSON.stringify(msg);
-      state.ws.send(data);
-      log("out", "\u2192 " + data);
+      const msg = { type, seq: state.seq++, ts: Date.now(), payload: payload || {} };
+      state.ws.send(JSON.stringify(msg));
+      log("out", "\u2192 " + type);
     }
 
-    // --- placeholder canvas rendering (real board arrives in Phase 2) ---
-    function drawBackground() {
-      const { width, height } = el.canvas;
-      ctx.fillStyle = "#02090f";
-      ctx.fillRect(0, 0, width, height);
-      ctx.strokeStyle = "rgba(60, 204, 255, 0.12)";
-      ctx.lineWidth = 1;
-      const step = 32;
-      for (let x = 0; x <= width; x += step) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, height);
-        ctx.stroke();
+    // --- message handling ----------------------------------------------
+    function onMessage(data) {
+      let msg;
+      try { msg = JSON.parse(data); }
+      catch { log("err", "Bad JSON from server."); return; }
+      log("in", "\u2190 " + msg.type);
+      const p = msg.payload || {};
+      switch (msg.type) {
+        case "welcome": onWelcome(p); break;
+        case "game_joined": onGameJoined(p); break;
+        case "lobby_state": onLobbyState(p); break;
+        case "game_started": onGameStarted(p); break;
+        case "error": onError(p); break;
+        case "pong": break;
+        default: break;
       }
-      for (let y = 0; y <= height; y += step) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(width, y);
-        ctx.stroke();
-      }
-      ctx.fillStyle = "rgba(207, 232, 242, 0.4)";
-      ctx.font = "14px system-ui, sans-serif";
-      ctx.fillText("Board renders here in Phase 2", 16, 24);
     }
 
-    let sonarR = 0;
-    function drawSonar() {
-      sonarR = 0;
-      const cx = el.canvas.width / 2;
-      const cy = el.canvas.height / 2;
-      function frame() {
-        drawBackground();
-        ctx.beginPath();
-        ctx.arc(cx, cy, sonarR, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(60, 204, 255, ${1 - sonarR / 160})`;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        sonarR += 4;
-        if (sonarR < 160) requestAnimationFrame(frame);
-        else drawBackground();
-      }
-      frame();
+    function onWelcome(p) {
+      state.playerId = p.player_id;
+      state.token = p.session_token;
+      localStorage.setItem(LS_TOKEN, state.token);
+      el.whoami.textContent =
+        `${el.nameInput.value.trim() || "Captain"} \u00b7 ${p.player_id}`;
+      log("sys", `Welcome. player_id=${p.player_id}`);
+      // If the server puts us back in a room, a lobby_state/game_started
+      // will follow and switch the view; otherwise we stay on home.
     }
 
-    el.btnConnect.addEventListener("click", connect);
-    el.btnDisconnect.addEventListener("click", disconnect);
-    el.btnPing.addEventListener("click", () => send("ping", {}));
-    el.btnEcho.addEventListener("click", () =>
-      send("echo_test", { note: "hello from client", n: state.seq }));
+    function onGameJoined(p) {
+      state.roomCode = p.room_code;
+      state.isHost = !!p.is_host;
+      setView("lobby");
+      el.roomCode.textContent = p.room_code;
+      clearToast();
+    }
 
-    setConnected(false);
-    drawBackground();
-    log("sys", "Ready. Click Connect to reach the server.");
+    function onLobbyState(p) {
+      state.lobby = p;
+      state.roomCode = p.room_code;
+      state.isHost = (p.host_id === state.playerId);
+      if (p.phase === "playing") { renderGamePlayers(p); setView("game"); }
+      else { renderLobby(p); if (state.view !== "lobby") setView("lobby"); }
+    }
+
+    function onGameStarted(p) {
+      state.roomCode = p.room_code;
+      renderGamePlayers({ players: p.players });
+      setView("game");
+      log("sys", "Game started.");
+    }
+
+    function onError(p) {
+      log("err", `error[${p.code}] ${p.message}`);
+      const target = state.view === "home" ? el.homeToast : el.lobbyToast;
+      target.textContent = p.message || p.code;
+      setTimeout(() => { target.textContent = ""; }, 4000);
+    }
+
+    function clearToast() {
+      el.homeToast.textContent = ""; el.lobbyToast.textContent = "";
+    }
+
+    // --- rendering ------------------------------------------------------
+    function setView(view) {
+      state.view = view;
+      el.viewHome.classList.toggle("hidden", view !== "home");
+      el.viewLobby.classList.toggle("hidden", view !== "lobby");
+      el.viewGame.classList.toggle("hidden", view !== "game");
+    }
+
+    function renderLobby(p) {
+      el.roomCode.textContent = p.room_code || "------";
+      el.playerList.innerHTML = "";
+      let me = null;
+      (p.players || []).forEach((pl) => {
+        if (pl.player_id === state.playerId) me = pl;
+        const li = document.createElement("li");
+        const name = document.createElement("span");
+        name.className = "pname";
+        name.textContent = pl.display_name;
+        li.appendChild(name);
+        if (pl.player_id === p.host_id) li.appendChild(badge("host", "HOST"));
+        if (pl.ready) li.appendChild(badge("ready", "READY"));
+        if (!pl.connected) li.appendChild(badge("offline", "OFFLINE"));
+        el.playerList.appendChild(li);
+      });
+      el.btnReady.textContent = (me && me.ready) ? "Not Ready" : "Ready Up";
+      const players = p.players || [];
+      const allReady =
+        players.length >= 2 && players.every((x) => x.ready || !x.connected);
+      el.btnStart.classList.toggle("hidden", !state.isHost);
+      el.btnStart.disabled = !(state.isHost && allReady);
+    }
+
+    function renderGamePlayers(p) {
+      el.gamePlayers.innerHTML = "";
+      (p.players || []).forEach((pl) => {
+        const li = document.createElement("li");
+        if (pl.color) {
+          const sw = document.createElement("span");
+          sw.className = "swatch";
+          sw.style.background = pl.color;
+          li.appendChild(sw);
+        }
+        const name = document.createElement("span");
+        name.className = "pname";
+        name.textContent = pl.display_name || pl.player_id;
+        li.appendChild(name);
+        el.gamePlayers.appendChild(li);
+      });
+    }
+
+    function badge(cls, text) {
+      const b = document.createElement("span");
+      b.className = "badge " + cls;
+      b.textContent = text;
+      return b;
+    }
+
+    function myReady() {
+      if (!state.lobby) return false;
+      const me = (state.lobby.players || [])
+        .find((x) => x.player_id === state.playerId);
+      return me ? me.ready : false;
+    }
+
+    // --- actions --------------------------------------------------------
+    el.btnCreate.addEventListener("click", () => {
+      persistName();
+      send("create_game", { max_players: 4, map_id: "trench_alpha" });
+    });
+    el.btnJoin.addEventListener("click", () => {
+      persistName();
+      const code = el.roomInput.value.trim().toUpperCase();
+      if (!code) { el.homeToast.textContent = "Enter a room code."; return; }
+      send("join_game", { room_code: code });
+    });
+    el.btnReady.addEventListener("click", () =>
+      send("set_ready", { ready: !myReady() }));
+    el.btnStart.addEventListener("click", () => send("start_game", {}));
+    el.btnLeave.addEventListener("click", leaveRoom);
+    el.btnLeaveGame.addEventListener("click", leaveRoom);
+
+    function leaveRoom() {
+      send("leave_game", {});
+      state.roomCode = null; state.isHost = false; state.lobby = null;
+      setView("home");
+    }
+
+    function persistName() {
+      const name = el.nameInput.value.trim();
+      if (name) localStorage.setItem(LS_NAME, name);
+    }
+
+    // --- init -----------------------------------------------------------
+    el.nameInput.value = localStorage.getItem(LS_NAME) || "";
+    setView("home");
+    log("sys", "Ready.");
+    connect();
   </script>
 </body>
 </html>

@@ -484,8 +484,9 @@ Reports a rejected request or protocol violation.
 ```
 
 Error `code` values: `protocol_version_unsupported`, `room_not_found`,
-`room_full`, `not_host`, `not_in_game`, `invalid_register`, `already_locked`,
-`not_your_turn_phase`, `rate_limited`, `internal_error`.
+`room_full`, `not_host`, `not_in_game`, `no_identity`, `unknown_type`,
+`invalid_register`, `already_locked`, `not_your_turn_phase`, `rate_limited`,
+`internal_error`, `bad_json`, `missing_type`.
 
 ---
 
