@@ -191,7 +191,7 @@
 <body>
   <header>
     <h1>Submarine Trench War</h1>
-    <div class="subtitle">Phase 4 &mdash; draft &amp; the ping timer</div>
+    <div class="subtitle">Phase 5 &mdash; hazards &amp; combat</div>
   </header>
 
   <main>
@@ -304,7 +304,7 @@
       timerEndsAt: null,// Ping Timer deadline (epoch ms), or null
     };
 
-    // Navigation card metadata: label + glyph for the UI.
+    // Card metadata: label + glyph for the UI.
     const CARD_META = {
       ahead_standard: { label: "Ahead 1", glyph: "\u2191" },
       ahead_flank:    { label: "Ahead 2", glyph: "\u21c8" },
@@ -313,7 +313,12 @@
       starboard_bank: { label: "Starb'd", glyph: "\u21b1" },
       dive:           { label: "Dive",    glyph: "\u2b07" },
       surface:        { label: "Surface", glyph: "\u2b06" },
+      torpedo:        { label: "Torpedo", glyph: "\u27a4" },
+      depth_charge:   { label: "D.Charge", glyph: "\u25c9" },
+      sonar_ping:     { label: "Sonar",   glyph: "\u25cc" },
     };
+    // Cards that actually move the sub (for the path preview).
+    const MOVE_CARDS = { ahead_standard: 1, ahead_flank: 2, reverse: 1 };
     const REGISTERS = 5;
 
     const $ = (id) => document.getElementById(id);
@@ -406,6 +411,7 @@
         case "timer_started": onTimerStarted(p); break;
         case "registers_resolving": onRegistersResolving(p); break;
         case "round_result": onRoundResult(p); break;
+        case "revealed_cards": onRevealedCards(p); break;
         case "game_state": onGameState(p); break;
         case "error": onError(p); break;
         case "pong": break;
@@ -495,11 +501,55 @@
     function onRoundResult(p) {
       state.timerEndsAt = null;
       el.pingTimer.classList.add("hidden");
+      // Consumed mines are gone: scrub them from the local board grid.
+      (p.mines_cleared || []).forEach((m) => clearMineTile(m.x, m.y));
       // Replay the phases, then settle on the authoritative final subs.
       const finalSubs = p.submarines || state.subs;
       startReplay(p.phases || [], finalSubs);
+      logCombat(p.phases || []);
       log("sys", "Round " + p.round + " resolved (" +
         (p.phases ? p.phases.length : 0) + " phases).");
+    }
+
+    // Replace a mine tile ("M") with open trench (".") in the local grid.
+    function clearMineTile(x, y) {
+      const b = state.board;
+      if (!b || !b.grid || !b.grid[y]) return;
+      const row = b.grid[y];
+      if ((row[x] || "") === "M") {
+        b.grid[y] = row.slice(0, x) + "." + row.slice(x + 1);
+      }
+    }
+
+    // Summarise notable combat events from a resolved round into the log.
+    function logCombat(phases) {
+      const nameOf = (id) => {
+        const s = (state.subs || []).find((x) => x.player_id === id);
+        return s ? (s.display_name || id) : id;
+      };
+      phases.forEach((ph) => (ph.events || []).forEach((ev) => {
+        if (ev.type === "hit") {
+          log("sys", nameOf(ev.player_id) + " took " + ev.damage +
+            " from " + ev.weapon + ".");
+        } else if (ev.type === "mine") {
+          log("sys", nameOf(ev.player_id) + " hit a mine!");
+        } else if (ev.type === "ram") {
+          log("sys", nameOf(ev.player_id) + " rammed.");
+        } else if (ev.type === "destroyed") {
+          log("err", nameOf(ev.player_id) + " was destroyed!");
+        }
+      }));
+    }
+
+    function onRevealedCards(p) {
+      const nameOf = (id) => {
+        const s = (state.subs || []).find((x) => x.player_id === id);
+        return s ? (s.display_name || id) : id;
+      };
+      const labels = (p.registers || [])
+        .map((k) => (CARD_META[k] || { label: k }).label);
+      log("sys", "Sonar reveals " + nameOf(p.player_id) + ": " +
+        labels.join(" \u2192 "));
     }
 
     function onGameState(p) {
@@ -685,6 +735,7 @@
       const subs = state.anim ? animatedSubs(t) : state.subs;
       if (!state.anim) drawGhostPath(g, ox, oy, size);
       subs.forEach((s) => drawSub(g, s, ox, oy, size, t));
+      if (state.anim) drawPhaseFX(g, ox, oy, size, t, subs);
     }
 
     function drawFeature(g, ch, px, py, size, t) {
@@ -743,6 +794,26 @@
       const angle = FACING_ANGLE[s.facing] || 0;
       const deep = s.depth === "deep";
 
+      // wreck: destroyed subs render as a grey hulk, no facing/depth cues
+      if (s.alive === false) {
+        g.save();
+        g.globalAlpha = 0.6;
+        g.strokeStyle = "#7a8a92";
+        g.lineWidth = 2;
+        g.beginPath();
+        g.moveTo(cx - r * 0.7, cy - r * 0.7);
+        g.lineTo(cx + r * 0.7, cy + r * 0.7);
+        g.moveTo(cx + r * 0.7, cy - r * 0.7);
+        g.lineTo(cx - r * 0.7, cy + r * 0.7);
+        g.stroke();
+        g.fillStyle = "rgba(122,138,146,0.35)";
+        g.beginPath();
+        g.arc(cx, cy, r * 0.9, 0, Math.PI * 2);
+        g.fill();
+        g.restore();
+        return;
+      }
+
       // depth ring: dashed when deep, solid when shallow
       g.strokeStyle = s.color || "#3cf";
       g.lineWidth = 2;
@@ -768,6 +839,93 @@
       g.fill();
       g.restore();
       g.globalAlpha = 1;
+
+      // hull bar underneath (only when we know the hull value)
+      if (typeof s.hull === "number") {
+        const frac = Math.max(0, Math.min(1, s.hull / 10));
+        const bw = size * 0.6, bh = Math.max(2, size * 0.06);
+        const bx = cx - bw / 2, by = cy + r * 1.3;
+        g.fillStyle = "rgba(0,0,0,0.5)";
+        g.fillRect(bx, by, bw, bh);
+        g.fillStyle = frac > 0.5 ? "#4caf50" : frac > 0.25 ? "#e0a020" : "#e05555";
+        g.fillRect(bx, by, bw * frac, bh);
+      }
+    }
+
+    // Draw combat effects for the phase currently animating.
+    function drawPhaseFX(g, ox, oy, size, t, subs) {
+      const a = state.anim;
+      if (!a || !a.phases) return;
+      const ph = a.phases[a.seg];
+      if (!ph || !ph.events) return;
+      const posOf = {};
+      subs.forEach((s) => { posOf[s.player_id] = s; });
+      const cx = (x) => ox + x * size + size / 2;
+      const cy = (y) => oy + y * size + size / 2;
+      const fade = 1 - a.frac;               // effects fade over the segment
+      g.save();
+      for (const ev of ph.events) {
+        if (ev.type === "torpedo" || ev.type === "sonar_ping") {
+          const isSonar = ev.type === "sonar_ping";
+          const path = ev.path || [];
+          if (path.length === 0) continue;
+          const last = path[path.length - 1];
+          g.globalAlpha = 0.4 + 0.5 * fade;
+          g.strokeStyle = isSonar ? "#3ce0ff" : "#ffb020";
+          g.lineWidth = isSonar ? 2 : 3;
+          g.setLineDash(isSonar ? [4, 4] : []);
+          g.beginPath();
+          g.moveTo(cx(ev.x), cy(ev.y));
+          g.lineTo(cx(last.x), cy(last.y));
+          g.stroke();
+          g.setLineDash([]);
+          if (ev.hit) explosion(g, cx(last.x), cy(last.y), size * 0.4, fade,
+                                isSonar ? "#3ce0ff" : "#ffb020");
+        } else if (ev.type === "explosion") {
+          explosion(g, cx(ev.x), cy(ev.y), size * 0.7, fade, "#ff6a30");
+        } else if (ev.type === "mine") {
+          explosion(g, cx(ev.x), cy(ev.y), size * 0.6, fade, "#e05555");
+        } else if (ev.type === "depth_charge_armed") {
+          g.globalAlpha = 0.5 + 0.4 * Math.sin(t / 120);
+          g.strokeStyle = "#e0a020";
+          g.lineWidth = 2;
+          g.beginPath();
+          g.arc(cx(ev.x), cy(ev.y), size * 0.3, 0, Math.PI * 2);
+          g.stroke();
+        } else if (ev.type === "ram") {
+          const s = posOf[ev.player_id];
+          if (s) explosion(g, cx(s.x), cy(s.y), size * 0.35, fade, "#fff2a0");
+        } else if (ev.type === "vent") {
+          const s = posOf[ev.player_id];
+          if (s) {
+            g.globalAlpha = 0.4 + 0.5 * fade;
+            g.strokeStyle = "#ff8c3c";
+            g.lineWidth = 2;
+            g.beginPath();
+            g.moveTo(cx(s.x), cy(s.y) + size * 0.3);
+            g.lineTo(cx(s.x), cy(s.y) - size * 0.3);
+            g.moveTo(cx(s.x) - size * 0.15, cy(s.y) - size * 0.1);
+            g.lineTo(cx(s.x), cy(s.y) - size * 0.3);
+            g.lineTo(cx(s.x) + size * 0.15, cy(s.y) - size * 0.1);
+            g.stroke();
+          }
+        }
+      }
+      g.restore();
+    }
+
+    function explosion(g, x, y, r, fade, color) {
+      g.globalAlpha = 0.15 + 0.55 * fade;
+      g.fillStyle = color;
+      g.beginPath();
+      g.arc(x, y, r * (0.6 + 0.6 * (1 - fade)), 0, Math.PI * 2);
+      g.fill();
+      g.globalAlpha = 0.3 + 0.5 * fade;
+      g.strokeStyle = color;
+      g.lineWidth = 2;
+      g.beginPath();
+      g.arc(x, y, r * (0.8 + 0.8 * (1 - fade)), 0, Math.PI * 2);
+      g.stroke();
     }
 
     // --- ghost path preview & phase replay ------------------------------
@@ -795,9 +953,8 @@
       for (const kind of program) {
         if (kind === "port_bank") { f = ROT_L[f]; }
         else if (kind === "starboard_bank") { f = ROT_R[f]; }
-        else if (kind === "dive" || kind === "surface") { /* no move */ }
-        else {
-          const steps = kind === "ahead_flank" ? 2 : 1;
+        else if (MOVE_CARDS[kind]) {
+          const steps = MOVE_CARDS[kind];
           let [dx, dy] = DIR_VEC[f];
           if (kind === "reverse") { dx = -dx; dy = -dy; }
           for (let s = 0; s < steps; s++) {
@@ -805,6 +962,7 @@
             x += dx; y += dy;
           }
         }
+        // dive / surface / torpedo / depth_charge / sonar_ping: no movement
         pts.push({ x, y });
       }
       return pts;
@@ -847,13 +1005,14 @@
       });
       const frames = [snapshotSubs(state.subs)]
         .concat(phases.map((ph) => ph.submarines || []));
-      state.anim = { frames, finalSubs, colorById, t0: null };
+      state.anim = { frames, phases, finalSubs, colorById, t0: null, seg: 0, frac: 0 };
     }
 
     function snapshotSubs(subs) {
       return subs.map((s) => ({
         player_id: s.player_id, x: s.x, y: s.y,
         facing: s.facing, depth: s.depth,
+        hull: s.hull, alive: s.alive,
       }));
     }
 
@@ -876,18 +1035,23 @@
         return state.subs;
       }
       const frac = (elapsed % PHASE_MS) / PHASE_MS;
+      a.seg = seg;
+      a.frac = frac;
       const from = indexById(a.frames[seg]);
       const to = indexById(a.frames[seg + 1]);
       const out = [];
       Object.keys(to).forEach((id) => {
         const b = to[id];
         const aa = from[id] || b;
+        const half = frac < 0.5 ? aa : b;
         out.push({
           player_id: id,
           x: aa.x + (b.x - aa.x) * frac,
           y: aa.y + (b.y - aa.y) * frac,
-          facing: frac < 0.5 ? aa.facing : b.facing,
-          depth: frac < 0.5 ? aa.depth : b.depth,
+          facing: half.facing,
+          depth: half.depth,
+          hull: half.hull,
+          alive: half.alive,
           color: a.colorById[id] || "#3cf",
         });
       });

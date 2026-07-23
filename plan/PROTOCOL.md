@@ -383,6 +383,26 @@ list applied in sequence.
 > plus an `events` list (`move` is inferred from the snapshot; explicit events
 > so far are `rotate`, `dive`, `surface`, `blocked`, `drift`, `turbulence`).
 > The richer per-event schema below is the target once combat lands.
+>
+> **Phase 5 note (combat):** the engine now emits combat events too. Every
+> event is `{ "type": <string>, "player_id": <id>, ... }`. The additional
+> types and their extra fields are:
+>
+> | type | player_id | extra fields |
+> |------|-----------|--------------|
+> | `torpedo` | shooter | `x`, `y`, `depth`, `path: [{x,y}]`, `hit: <id>\|null` |
+> | `sonar_ping` | shooter | `x`, `y`, `depth`, `path: [{x,y}]`, `hit: <id>\|null` |
+> | `depth_charge_armed` | owner | `x`, `y` |
+> | `explosion` | owner | `x`, `y` (depth charge detonating, 1-phase delay) |
+> | `hit` | victim | `by: <id>`, `weapon`, `damage` |
+> | `mine` | victim | `x`, `y`, `scrambled: <register>\|null` |
+> | `vent` | sub | (forced Deep → Shallow) |
+> | `ram` | sub | (same-tile collision damage) |
+> | `destroyed` | sub | (hull reached 0; becomes a wreck) |
+>
+> Each phase snapshot entry now also carries `hull` and `alive`. Depth charges
+> armed on the final register detonate at round end and their events are folded
+> into the last phase.
 
 ```json
 {
@@ -473,7 +493,10 @@ End-of-round summary after all 5 phases resolve.
 
 > **Phase 3 note:** the current server sends the resolved animation stream
 > here as a `phases` array (one entry per register, in order) plus the final
-> authoritative `submarines`. The `standings` summary below is the target for
+> authoritative `submarines`. As of Phase 5 each phase snapshot includes
+> `hull`/`alive`, phases may carry combat `events`, and a top-level
+> `mines_cleared` array lists mine tiles consumed this round (so clients can
+> remove those markers). The `standings` summary below is the target for
 > later phases once hull/data matter.
 
 ```json
@@ -486,15 +509,22 @@ End-of-round summary after all 5 phases resolve.
         "register": 0,
         "submarines": [
           { "player_id": "p_ab12", "x": 3, "y": 2,
-            "facing": "E", "depth": "shallow" }
+            "facing": "E", "depth": "shallow", "hull": 10, "alive": true }
         ],
-        "events": [ { "type": "blocked", "player_id": "p_cd34" } ]
+        "events": [
+          { "type": "torpedo", "player_id": "p_ab12", "x": 3, "y": 2,
+            "depth": "shallow", "path": [ { "x": 4, "y": 2 } ],
+            "hit": "p_cd34" },
+          { "type": "hit", "player_id": "p_cd34", "by": "p_ab12",
+            "weapon": "torpedo", "damage": 2 }
+        ]
       }
     ],
+    "mines_cleared": [ { "x": 6, "y": 3 } ],
     "submarines": [
       { "player_id": "p_ab12", "display_name": "Nautilus", "color": "#3cf",
         "x": 5, "y": 2, "facing": "E", "depth": "shallow",
-        "hull": 10, "data_collected": 0 }
+        "hull": 10, "alive": true, "data_collected": 0 }
     ]
   }
 }

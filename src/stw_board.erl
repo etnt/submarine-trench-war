@@ -22,7 +22,7 @@
 -module(stw_board).
 
 -export([default/0, to_json/1, tile_at/2, dims/1, spawns/1, legend/0]).
--export([current_at/2, turbulence_at/2]).
+-export([current_at/2, turbulence_at/2, clear_mine/2]).
 
 -define(W, 20).
 -define(H, 12).
@@ -114,6 +114,16 @@ classify({X, Y}, WallSet, SpawnSet, NodeSet, MineSet, VentSet, Extraction) ->
 -spec tile_at(board(), coord()) -> kind().
 tile_at(Board, Coord) ->
     maps:get(Coord, maps:get(tiles, Board), wall).
+
+%% @doc Remove a triggered mine, turning it back into open trench. A
+%% non-mine tile is returned unchanged.
+-spec clear_mine(board(), coord()) -> board().
+clear_mine(Board, Coord) ->
+    Tiles = maps:get(tiles, Board),
+    case maps:get(Coord, Tiles, wall) of
+        mine -> Board#{tiles => maps:put(Coord, trench, Tiles)};
+        _ -> Board
+    end.
 
 -spec dims(board()) -> {pos_integer(), pos_integer()}.
 dims(Board) ->

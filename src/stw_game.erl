@@ -336,12 +336,14 @@ game_state_payload(S) ->
 locked_payload(S, PlayerId) ->
     #{<<"player_id">> => PlayerId,
       <<"locked">> => length(S#state.locked),
-      <<"total">> => map_size(S#state.subs)}.
+      <<"total">> => length(seated_ids(S))}.
 
-round_result_payload(S, Phases) ->
+round_result_payload(S, Phases, MinesCleared) ->
     #{<<"round">> => S#state.round,
       <<"phases">> => Phases,
-      <<"submarines">> => submarines_json(S)}.
+      <<"submarines">> => submarines_json(S),
+      <<"mines_cleared">> => [#{<<"x">> => X, <<"y">> => Y}
+                              || {X, Y} <- MinesCleared]}.
 
 %% --- round resolution -------------------------------------------------
 
@@ -375,9 +377,16 @@ card_id(Round, Idx) ->
     <<"r", (integer_to_binary(Round))/binary,
       "c", (integer_to_binary(Idx))/binary>>.
 
+%% Weighted deck: roughly three navigation cards to each tactical card, so
+%% players usually have the movement they need but combat still shows up.
 random_kind() ->
-    Kinds = stw_engine:card_kinds(),
-    lists:nth(rand:uniform(length(Kinds)), Kinds).
+    case rand:uniform(4) of
+        1 -> pick(stw_engine:tactical_cards());
+        _ -> pick(stw_engine:nav_cards())
+    end.
+
+pick(List) ->
+    lists:nth(rand:uniform(length(List)), List).
 
 push_hand(S, PlayerId) ->
     Hand = maps:get(PlayerId, S#state.hands, []),
@@ -437,15 +446,42 @@ resolve_on_timeout(S, Unlocked) ->
 resolve_round(S, AutoFilled) ->
     S0 = cancel_timer(S),
     broadcast(S0, <<"registers_resolving">>, resolving_payload(S0, AutoFilled)),
-    {Subs2, Phases} =
+    {Subs2, Phases, Effects} =
         stw_engine:resolve_round(S0#state.board, S0#state.subs, S0#state.programs),
-    S1 = S0#state{subs = Subs2},
-    broadcast(S1, <<"round_result">>, round_result_payload(S1, Phases)),
+    Cleared = maps:get(mines_cleared, Effects, []),
+    Board1 = lists:foldl(fun(C, B) -> stw_board:clear_mine(B, C) end,
+                         S0#state.board, Cleared),
+    S1 = S0#state{subs = Subs2, board = Board1},
+    broadcast(S1, <<"round_result">>, round_result_payload(S1, Phases, Cleared)),
+    %% Sonar reveals: privately show each shooter the cards of anyone their
+    %% ping connected with this round.
+    reveal_sonar_hits(S0, Phases),
     %% Advance to the next round: fresh hands, clear programs/locks/timer.
     S2 = S1#state{round = S1#state.round + 1,
                   programs = #{}, locked = [],
                   timer_ref = undefined, timer_ends = undefined},
     deal_and_announce(S2).
+
+%% Scan the resolved phases for sonar pings that hit, and privately push the
+%% revealed program of each victim to the shooter that pinged them.
+reveal_sonar_hits(S, Phases) ->
+    Hits = lists:usort(
+             [{maps:get(<<"player_id">>, E), maps:get(<<"hit">>, E)}
+              || P <- Phases, E <- maps:get(<<"events">>, P),
+                 maps:get(<<"type">>, E) =:= <<"sonar_ping">>,
+                 maps:get(<<"hit">>, E, null) =/= null]),
+    lists:foreach(
+      fun({Shooter, Target}) ->
+          case maps:find(Target, S#state.programs) of
+              {ok, Registers} ->
+                  push(ws_of(Shooter, S), <<"revealed_cards">>,
+                       #{<<"player_id">> => Target,
+                         <<"round">> => S#state.round,
+                         <<"registers">> => Registers});
+              error ->
+                  ok
+          end
+      end, Hits).
 
 %% --- ping timer -------------------------------------------------------
 
@@ -472,7 +508,12 @@ now_ms() -> erlang:system_time(millisecond).
 %% --- lookups ----------------------------------------------------------
 
 seated_ids(S) ->
-    [Id || Id <- S#state.join_order, maps:is_key(Id, S#state.subs)].
+    [Id || Id <- S#state.join_order,
+           maps:is_key(Id, S#state.subs),
+           is_alive(Id, S)].
+
+is_alive(PlayerId, S) ->
+    maps:get(alive, maps:get(PlayerId, S#state.subs), true).
 
 hull_of(PlayerId, S) ->
     maps:get(hull, maps:get(PlayerId, S#state.subs)).
@@ -499,6 +540,7 @@ sub_json(Idx, Id, S) ->
       <<"facing">> => maps:get(facing, Sub),
       <<"depth">> => maps:get(depth, Sub),
       <<"hull">> => maps:get(hull, Sub),
+      <<"alive">> => maps:get(alive, Sub, true),
       <<"data_collected">> => maps:get(data, Sub)}.
 
 %% --- board / submarines ----------------------------------------------
@@ -520,6 +562,7 @@ make_sub({X, Y}, Height) ->
       facing => facing_from(Y, Height),
       depth => <<"shallow">>,
       hull => ?START_HULL,
+      alive => true,
       data => 0}.
 
 %% Point the sub toward the centre of the map from its spawn corner.

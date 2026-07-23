@@ -117,14 +117,14 @@ Goal: card economy and the multiplayer pacing mechanic.
 
 Goal: add danger and direct player interaction.
 
-* [ ] Naval mines: trigger explosion, damage, scramble a register.
-* [ ] Ramming: same-tile collision damage and push-apart resolution.
-* [ ] Torpedoes: travel per phase on the current depth layer until blocked.
-* [ ] Depth charges: cross-layer weapon with 1-phase delay.
-* [ ] Sonar pings: straight-line beams that damage and reveal enemy cards.
-* [ ] Thermal vents: forced Deep → Shallow on specific phases.
-* [ ] Hull/damage model and submarine destruction handling.
-* [ ] Client: render explosions, torpedoes, sonar beams, damage feedback.
+* [x] Naval mines: trigger explosion, damage, scramble a register.
+* [x] Ramming: same-tile collision damage and push-apart resolution.
+* [x] Torpedoes: travel per phase on the current depth layer until blocked.
+* [x] Depth charges: cross-layer weapon with 1-phase delay.
+* [x] Sonar pings: straight-line beams that damage and reveal enemy cards.
+* [x] Thermal vents: forced Deep → Shallow on specific phases.
+* [x] Hull/damage model and submarine destruction handling.
+* [x] Client: render explosions, torpedoes, sonar beams, damage feedback.
 
 **Milestone:** Subs can damage, block, and destroy each other during resolution.
 
