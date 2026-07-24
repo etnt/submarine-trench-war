@@ -23,6 +23,7 @@
 
 -export([default/0, to_json/1, tile_at/2, dims/1, spawns/1, legend/0]).
 -export([current_at/2, turbulence_at/2, clear_mine/2]).
+-export([data_nodes/1, extraction/1]).
 
 -define(W, 20).
 -define(H, 12).
@@ -133,6 +134,16 @@ dims(Board) ->
 spawns(Board) ->
     maps:get(spawns, Board).
 
+%% @doc The authored data-node positions for this map.
+-spec data_nodes(board()) -> [coord()].
+data_nodes(Board) ->
+    maps:get(data_nodes, Board, []).
+
+%% @doc The authored (initial) extraction-zone position for this map.
+-spec extraction(board()) -> coord().
+extraction(Board) ->
+    maps:get(extraction, Board).
+
 %% @doc The current on a tile, or `none`. A current is `{Direction, Strength}`.
 -spec current_at(board(), coord()) -> {dir(), pos_integer()} | none.
 current_at(Board, Coord) ->
@@ -178,8 +189,10 @@ row_bin(Y, Board, W) ->
 kind_char(wall) -> $#;
 kind_char(trench) -> $.;
 kind_char(spawn) -> $S;
-kind_char(data_node) -> $D;
-kind_char(extraction) -> $X;
+%% Data nodes and the extraction zone are hidden from the static grid: they
+%% are revealed dynamically per player (fog of war) via game_state.
+kind_char(data_node) -> $.;
+kind_char(extraction) -> $.;
 kind_char(mine) -> $M;
 kind_char(vent) -> $V.
 

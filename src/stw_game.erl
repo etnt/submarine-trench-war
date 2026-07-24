@@ -22,19 +22,26 @@
 -export([program_registers/3, lock_registers/2, set_sonar_mode/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
+-ifdef(TEST).
+%% Pure objective helpers exposed for unit testing.
+-export([resolve_data/3, extraction_path/1]).
+-endif.
+
 -define(COLORS, [<<"#3cf">>, <<"#f83">>, <<"#6c6">>, <<"#c6f">>]).
 -define(START_HULL, 10).
 -define(REGISTERS, 5).
 -define(BASE_HAND, 9).
 -define(MIN_HAND, 5).
 -define(PING_TIMER_MS, 30000).
+%% Data nodes a submarine must carry before it can extract and win.
+-define(WIN_DATA, 3).
 
 -record(state, {
     room_code :: binary(),
     map_id :: binary(),
     max_players :: pos_integer(),
     host_id :: binary() | undefined,
-    phase = lobby :: lobby | playing,
+    phase = lobby :: lobby | playing | finished,
     join_order = [] :: [binary()],
     players = #{} :: #{binary() => map()},
     board :: stw_board:board(),
@@ -46,6 +53,12 @@
     locked = [] :: [binary()],
     sonar = #{} :: #{binary() => active | passive},
     ink = #{} :: #{stw_board:coord() => pos_integer()},
+    nodes = [] :: [stw_board:coord()],
+    extraction :: stw_board:coord() | undefined,
+    epath = [] :: [stw_board:coord()],
+    eidx = 0 :: non_neg_integer(),
+    revealed = [] :: [binary()],
+    winner = undefined :: binary() | undefined,
     timer_ref :: reference() | undefined,
     timer_ends :: integer() | undefined
 }).
@@ -148,9 +161,13 @@ handle_call({reconnect, PlayerId, WsPid}, _From, S) ->
 handle_call({start_game, PlayerId}, _From, S) ->
     case PlayerId =:= S#state.host_id of
         true ->
+            EPath = extraction_path(S#state.board),
             S1 = S#state{phase = playing, subs = place_subs(S),
                          round = 1, programs = #{}, locked = [],
                          submitted = #{}, ink = #{},
+                         nodes = stw_board:data_nodes(S#state.board),
+                         epath = EPath, eidx = 0, extraction = hd(EPath),
+                         revealed = [], winner = undefined,
                          timer_ref = undefined, timer_ends = undefined},
             broadcast(S1, <<"game_started">>, game_started_payload(S1)),
             S2 = deal_and_announce(S1),
@@ -369,13 +386,16 @@ broadcast_game_state(S) ->
 player_view(S, PlayerId) ->
     Base = #{<<"round">> => S#state.round,
              <<"sonar_mode">> => atom_to_binary(sonar_mode(S, PlayerId)),
-             <<"ink_clouds">> => ink_json(S)},
+             <<"ink_clouds">> => ink_json(S),
+             <<"extraction">> => coord_json(S#state.extraction),
+             <<"win_data">> => ?WIN_DATA},
     case is_spectator(S, PlayerId) of
         true ->
             Base#{<<"spectator">> => true,
                   <<"you">> => null,
                   <<"submarines">> => submarines_json(S),
                   <<"visible_tiles">> => [],
+                  <<"data_nodes">> => [coord_json(C) || C <- S#state.nodes],
                   <<"broadcasts">> => []};
         false ->
             VisIds = visible_ids(S, PlayerId),
@@ -385,14 +405,16 @@ player_view(S, PlayerId) ->
                   <<"submarines">> => [sub_json(index_of(Id, S), Id, S)
                                        || Id <- VisIds],
                   <<"visible_tiles">> => [coord_json(C) || C <- Tiles],
-                  <<"broadcasts">> => [Id || Id <- active_ids(S),
+                  <<"data_nodes">> => [coord_json(C)
+                                       || C <- visible_nodes(S, PlayerId)],
+                  <<"broadcasts">> => [Id || Id <- forced_ids(S),
                                              Id =/= PlayerId]}
     end.
 
 %% Send every player their fogged replay of the round.
 broadcast_round_result(S, Phases, MinesCleared) ->
     Ink = ink_tiles(S),
-    Actives = active_ids(S),
+    Actives = forced_ids(S),
     Cleared = [coord_json(C) || C <- MinesCleared],
     lists:foreach(
       fun(Id) ->
@@ -457,7 +479,7 @@ visible_ids(S, PlayerId) ->
     Me = maps:get(PlayerId, S#state.subs),
     Mode = sonar_mode(S, PlayerId),
     Ink = ink_tiles(S),
-    Actives = active_ids(S),
+    Actives = forced_ids(S),
     [Id || Id <- S#state.join_order,
            maps:is_key(Id, S#state.subs),
            begin
@@ -483,6 +505,24 @@ sonar_mode(S, PlayerId) ->
 %% Players actively pinging: their position is broadcast to everyone.
 active_ids(S) ->
     [Id || Id <- seated_ids(S), sonar_mode(S, Id) =:= active].
+
+%% Submarines forced visible to everyone this turn: active pingers plus any
+%% extraction-ready leaders that were announced.
+forced_ids(S) ->
+    lists:usort(active_ids(S) ++ S#state.revealed).
+
+%% Data nodes the player can currently see (within sonar range, not inked).
+visible_nodes(S, PlayerId) ->
+    case maps:find(PlayerId, S#state.subs) of
+        {ok, Me} ->
+            Mode = sonar_mode(S, PlayerId),
+            Ink = ink_tiles(S),
+            [C || C <- S#state.nodes,
+                  not lists:member(C, Ink),
+                  stw_vision:sees(S#state.board, Me, Mode, C)];
+        error ->
+            []
+    end.
 
 parse_mode(<<"active">>) -> active;
 parse_mode(active) -> active;
@@ -604,6 +644,7 @@ map_ids_to_kinds(Ids, Hand) ->
     end.
 
 %% Resolve the round once every seated player has locked in.
+maybe_resolve(#state{phase = Phase} = S) when Phase =/= playing -> S;
 maybe_resolve(S) ->
     Seated = lists:sort(seated_ids(S)),
     case Seated =/= [] andalso lists:sort(S#state.locked) =:= Seated of
@@ -638,7 +679,10 @@ resolve_round(S, AutoFilled) ->
     NewInk = maps:get(ink_clouds, Effects, []),
     Board1 = lists:foldl(fun(C, B) -> stw_board:clear_mine(B, C) end,
                          S0#state.board, Cleared),
-    S1 = S0#state{subs = Subs2, board = Board1},
+    %% Objective: download data nodes we ended the round on, then resolve data
+    %% theft from any torpedo hits (a laden sub drops a recoverable node).
+    {Subs3, Nodes1} = resolve_data(Subs2, S0#state.nodes, Phases),
+    S1 = S0#state{subs = Subs3, board = Board1, nodes = Nodes1},
     %% Fog the replay per player using the ink clouds that were active during
     %% the round (before this round's fresh deploys take hold).
     broadcast_round_result(S1, Phases, Cleared),
@@ -647,11 +691,191 @@ resolve_round(S, AutoFilled) ->
     reveal_sonar_hits(S0, Phases),
     %% Age existing ink clouds and add the ones deployed this round.
     Ink1 = add_ink(tick_ink(S1#state.ink), NewInk),
-    %% Advance to the next round: fresh hands, clear programs/locks/timer.
-    S2 = S1#state{round = S1#state.round + 1,
-                  programs = #{}, locked = [], submitted = #{}, ink = Ink1,
-                  timer_ref = undefined, timer_ends = undefined},
-    deal_and_announce(S2).
+    %% Decide the match outcome from the freshly resolved positions.
+    case match_result(S1) of
+        {game_over, Winner, Reason, RunnerUp} ->
+            end_match(S1#state{ink = Ink1}, Winner, Reason, RunnerUp);
+        continue ->
+            %% Reveal any extraction-ready leaders to everyone for one turn and
+            %% advance the patrolling extraction zone before the next round.
+            Leaders = extraction_leaders(S1),
+            {Extraction1, Eidx1} = advance_extraction(S1),
+            S2 = S1#state{round = S1#state.round + 1,
+                          programs = #{}, locked = [], submitted = #{},
+                          ink = Ink1, revealed = Leaders,
+                          extraction = Extraction1, eidx = Eidx1,
+                          timer_ref = undefined, timer_ends = undefined},
+            announce_leaders(S2, Leaders),
+            deal_and_announce(S2)
+    end.
+
+%% --- Objective: data nodes, extraction, win conditions ----------------
+
+%% Build the patrolling extraction ship's path: the open tiles along the top
+%% interior row, ping-ponging so the zone sweeps back and forth.
+extraction_path(Board) ->
+    {W, _H} = stw_board:dims(Board),
+    Fwd = [{X, 1} || X <- lists:seq(1, W - 2),
+                     stw_board:tile_at(Board, {X, 1}) =/= wall],
+    case Fwd of
+        [] -> [stw_board:extraction(Board)];
+        [_] -> Fwd;
+        _ -> Fwd ++ lists:reverse(lists:droplast(tl(Fwd)))
+    end.
+
+%% Advance the extraction zone one step along its patrol path.
+advance_extraction(#state{epath = []} = S) ->
+    {S#state.extraction, 0};
+advance_extraction(#state{epath = Path, eidx = Idx}) ->
+    Idx1 = (Idx + 1) rem length(Path),
+    {lists:nth(Idx1 + 1, Path), Idx1}.
+
+%% Apply node downloads (a sub ending its round on a node collects it) and
+%% data theft (a sub carrying data that took a torpedo hit drops one node on
+%% its tile). Returns the updated submarines and remaining node coords.
+resolve_data(Subs, Nodes, Phases) ->
+    {Subs1, Nodes1} = collect_nodes(Subs, Nodes),
+    drop_stolen(Subs1, Nodes1, torpedo_victims(Phases)).
+
+collect_nodes(Subs, Nodes) ->
+    lists:foldl(
+      fun(Id, {Ss, Ns}) ->
+          Sub = maps:get(Id, Ss),
+          P = {maps:get(x, Sub), maps:get(y, Sub)},
+          case maps:get(alive, Sub) andalso lists:member(P, Ns) of
+              true ->
+                  Sub1 = Sub#{data => maps:get(data, Sub) + 1},
+                  {maps:put(Id, Sub1, Ss), lists:delete(P, Ns)};
+              false ->
+                  {Ss, Ns}
+          end
+      end, {Subs, Nodes}, lists:sort(maps:keys(Subs))).
+
+drop_stolen(Subs, Nodes, Victims) ->
+    lists:foldl(
+      fun(Id, {Ss, Ns}) ->
+          case maps:find(Id, Ss) of
+              {ok, Sub} ->
+                  case maps:get(alive, Sub) andalso maps:get(data, Sub) > 0 of
+                      true ->
+                          Sub1 = Sub#{data => maps:get(data, Sub) - 1},
+                          P = {maps:get(x, Sub), maps:get(y, Sub)},
+                          {maps:put(Id, Sub1, Ss), lists:usort([P | Ns])};
+                      false ->
+                          {Ss, Ns}
+                  end;
+              error ->
+                  {Ss, Ns}
+          end
+      end, {Subs, Nodes}, lists:usort(Victims)).
+
+%% The distinct submarines that took a torpedo hit this round.
+torpedo_victims(Phases) ->
+    [maps:get(<<"player_id">>, E)
+     || Ph <- Phases, E <- maps:get(<<"events">>, Ph, []),
+        maps:get(<<"type">>, E) =:= <<"hit">>,
+        maps:get(<<"weapon">>, E, undefined) =:= <<"torpedo">>].
+
+%% Determine whether the match has ended after a round.
+match_result(S) ->
+    case sort_by_priority(extractors(S), S) of
+        [Winner | Rest] ->
+            RunnerUp = case Rest of [R | _] -> R; [] -> undefined end,
+            {game_over, Winner, <<"extracted">>, RunnerUp};
+        [] ->
+            Alive = alive_ids(S),
+            case map_size(S#state.subs) >= 2 andalso length(Alive) =< 1 of
+                true ->
+                    Winner = case Alive of [W] -> W; [] -> undefined end,
+                    Reason = case Winner of undefined -> <<"draw">>;
+                                            _ -> <<"survivor">> end,
+                    {game_over, Winner, Reason, undefined};
+                false ->
+                    continue
+            end
+    end.
+
+%% Alive submarines sitting on the extraction zone at shallow depth with
+%% enough data to win.
+extractors(S) ->
+    Ext = S#state.extraction,
+    [Id || {Id, Sub} <- maps:to_list(S#state.subs),
+           maps:get(alive, Sub),
+           maps:get(depth, Sub) =:= <<"shallow">>,
+           {maps:get(x, Sub), maps:get(y, Sub)} =:= Ext,
+           maps:get(data, Sub) >= ?WIN_DATA].
+
+%% Alive submarines carrying enough data to extract (revealed to all).
+extraction_leaders(S) ->
+    [Id || {Id, Sub} <- maps:to_list(S#state.subs),
+           maps:get(alive, Sub),
+           maps:get(data, Sub) >= ?WIN_DATA].
+
+alive_ids(S) ->
+    [Id || {Id, Sub} <- maps:to_list(S#state.subs), maps:get(alive, Sub)].
+
+%% Order ids by most data first, breaking ties by join order.
+sort_by_priority(Ids, S) ->
+    lists:sort(
+      fun(A, B) ->
+          DA = data_of(A, S), DB = data_of(B, S),
+          case DA =:= DB of
+              true -> join_pos(A, S) =< join_pos(B, S);
+              false -> DA > DB
+          end
+      end, Ids).
+
+data_of(Id, S) ->
+    maps:get(data, maps:get(Id, S#state.subs)).
+
+join_pos(Id, S) ->
+    index_at(Id, S#state.join_order, 0).
+
+%% Broadcast the extraction announcement for each revealed leader.
+announce_leaders(_S, []) -> ok;
+announce_leaders(S, Leaders) ->
+    [begin
+         Sub = maps:get(Id, S#state.subs),
+         broadcast(S, <<"extraction_announced">>,
+                   #{<<"player_id">> => Id,
+                     <<"data_collected">> => maps:get(data, Sub),
+                     <<"x">> => maps:get(x, Sub),
+                     <<"y">> => maps:get(y, Sub)})
+     end || Id <- Leaders],
+    ok.
+
+%% End the match: announce the winner and stop dealing rounds.
+end_match(S, Winner, Reason, RunnerUp) ->
+    S1 = S#state{phase = finished, winner = Winner,
+                 programs = #{}, locked = [], submitted = #{},
+                 revealed = alive_ids(S),
+                 timer_ref = undefined, timer_ends = undefined},
+    broadcast(S1, <<"game_over">>, game_over_payload(S1, Winner, Reason, RunnerUp)),
+    %% Send one final, fully revealed state so everyone sees the finish.
+    broadcast_game_state(S1),
+    S1.
+
+game_over_payload(S, Winner, Reason, RunnerUp) ->
+    #{<<"winner">> => null_or(Winner),
+      <<"reason">> => Reason,
+      <<"runner_up">> => null_or(RunnerUp),
+      <<"standings">> => standings_json(S)}.
+
+standings_json(S) ->
+    [begin
+         Idx = index_at(Id, S#state.join_order, 0),
+         Sub = maps:get(Id, S#state.subs),
+         P = maps:get(Id, S#state.players, #{}),
+         #{<<"player_id">> => Id,
+           <<"display_name">> => maps:get(display_name, P, Id),
+           <<"color">> => color_for(Idx),
+           <<"data_collected">> => maps:get(data, Sub),
+           <<"hull">> => maps:get(hull, Sub),
+           <<"alive">> => maps:get(alive, Sub)}
+     end || Id <- S#state.join_order, maps:is_key(Id, S#state.subs)].
+
+null_or(undefined) -> null;
+null_or(V) -> V.
 
 %% Scan the resolved phases for sonar pings that hit, and privately push the
 %% revealed program of each victim to the shooter that pinged them.

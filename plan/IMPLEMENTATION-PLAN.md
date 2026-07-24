@@ -151,15 +151,15 @@ resource.
 
 Goal: the win condition and its endgame tension.
 
-* [ ] Hidden data nodes: reveal within sonar range; download by stopping on top.
-* [ ] Data collection tracking per submarine.
-* [ ] Moving extraction zone (naval rescue ship) with per-turn movement.
-* [ ] Require Shallow depth to enter the extraction zone.
-* [ ] Extraction announcement: reveal the leader to all for one turn.
-* [ ] Contested extraction resolution (first extracts, second gets a shot).
-* [ ] Data theft: torpedoed sub drops a recoverable data node.
-* [ ] Win/lose conditions and end-of-match flow.
-* [ ] Client: data count HUD, extraction zone marker, victory screen.
+* [x] Hidden data nodes: reveal within sonar range; download by stopping on top.
+* [x] Data collection tracking per submarine.
+* [x] Moving extraction zone (naval rescue ship) with per-turn movement.
+* [x] Require Shallow depth to enter the extraction zone.
+* [x] Extraction announcement: reveal the leader to all for one turn.
+* [x] Contested extraction resolution (first extracts, second gets a shot).
+* [x] Data theft: torpedoed sub drops a recoverable data node.
+* [x] Win/lose conditions and end-of-match flow.
+* [x] Client: data count HUD, extraction zone marker, victory screen.
 
 **Milestone:** A full match can be won by collecting data and extracting.
 

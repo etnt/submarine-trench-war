@@ -484,8 +484,34 @@ currently see (fog of war).
 >   two rounds).
 > * `broadcasts` — ids of other players who are on active sonar (their
 >   position is revealed to everyone).
-
-The original target shape (kept for reference) was:
+>
+> **Phase 7 note:** `game_state` now also carries the objective layer:
+>
+> ```json
+> {
+>   "round": 3,
+>   "sonar_mode": "passive",
+>   "spectator": false,
+>   "you": { ...sub_json, includes "data_collected": 2 ... },
+>   "submarines": [ ... ],
+>   "visible_tiles": [ ... ],
+>   "ink_clouds": [ ... ],
+>   "broadcasts": [ "p_cd34" ],
+>   "data_nodes": [ { "x": 3, "y": 5 } ],
+>   "extraction": { "x": 10, "y": 1 },
+>   "win_data": 3
+> }
+> ```
+>
+> * `data_nodes` — data nodes the viewer can currently see (within sonar
+>   range and not hidden by ink). Hidden data nodes are **not** baked into the
+>   `game_started` board grid; they are revealed only here. Spectators see all
+>   remaining nodes.
+> * `extraction` — the patrolling extraction zone's current tile. It moves one
+>   step along a top-row patrol each round and is visible to everyone.
+> * `win_data` — data nodes a submarine must carry to be able to extract.
+> * `broadcasts` — also includes any extraction-ready leader that was revealed
+>   to all for one turn (see `extraction_announced`).
 
 ```json
 {
@@ -600,37 +626,54 @@ The target end-of-round summary (later phases):
 ```
 
 ### `extraction_announced`
-Broadcast when a player has enough data to extract; reveals their position to
-all for one turn.
+Broadcast when a submarine has collected enough data to extract; its position
+is revealed to all players for one turn.
+
+> **Phase 7 note:** implemented. The payload carries the leader's id, current
+> data count, and position. The leader is also force-visible in the next
+> `game_state` (listed in `broadcasts`).
 
 ```json
 {
   "type": "extraction_announced",
   "payload": {
     "player_id": "p_ab12",
-    "position": { "x": 5, "y": 5 }
+    "data_collected": 3,
+    "x": 5,
+    "y": 5
   }
 }
 ```
 
 ### `game_over`
-The match has ended.
+The match has ended. The server also sends a final, fully revealed
+`game_state` so every player sees the finish.
+
+> **Phase 7 note:** implemented shape below. `winner`/`runner_up` may be
+> `null` (e.g. mutual destruction). `standings` lists every submarine in join
+> order with its color, data, hull, and alive flag.
 
 ```json
 {
   "type": "game_over",
   "payload": {
-    "winner_id": "p_ab12",
+    "winner": "p_ab12",
     "reason": "extracted",
-    "final_standings": [
-      { "player_id": "p_ab12", "data_collected": 3, "extracted": true },
-      { "player_id": "p_cd34", "data_collected": 1, "extracted": false }
+    "runner_up": "p_cd34",
+    "standings": [
+      { "player_id": "p_ab12", "display_name": "Nautilus", "color": "#3cf",
+        "data_collected": 3, "hull": 8, "alive": true },
+      { "player_id": "p_cd34", "display_name": "Seawolf", "color": "#f83",
+        "data_collected": 1, "hull": 0, "alive": false }
     ]
   }
 }
 ```
 
-`reason` values: `extracted`, `last_sub_standing`, `round_limit`, `aborted`.
+`reason` values: `extracted` (a laden sub reached the zone at shallow depth),
+`survivor` (last submarine running), `draw` (no survivors). Contested
+extraction is resolved by most data (join order breaks ties); the loser is
+reported as `runner_up`.
 
 ### `pong`
 Reply to `ping`, echoing the original `seq` in `payload.reply_to`.

@@ -171,14 +171,15 @@ fog at all.
 
 ---
 
-## Objective *(planned)*
+## Objective
 
 The endgame is a **Black Box hunt**: locate hidden data nodes (visible only within
 sonar range), stop on them to download telemetry, then race to a moving surface
 extraction zone — which you can only enter at Shallow depth, making the final run
-a vulnerable gauntlet. Announcing your extraction reveals your position to the
-whole map, so everyone hunts the leader. These objective mechanics are on the
-roadmap and not yet in the current build (see **Status** below).
+a vulnerable gauntlet. Collecting enough data to extract announces your position
+to the whole map, so everyone hunts the leader. Torpedo a data-laden rival and
+they drop a node anyone can recover. Reach the patrolling extraction zone at
+Shallow depth with enough data and you win the match.
 
 ---
 
@@ -247,12 +248,13 @@ implemented and playable end-to-end:
 - ✅ Card drafting, the 30-second Ping Timer, and auto-fill
 - ✅ Hazards & combat (torpedoes, depth charges, sonar pings, mines, ramming)
 - ✅ Fog of war, active/passive sonar, ink clouds, and spectator mode
+- ✅ The Black Box objective: hidden data nodes, data theft, the moving
+  extraction zone, extraction announcements, and win/lose end-of-match flow
 
 On the roadmap:
 
-- ⏳ The Black Box objective, data theft, and the moving extraction zone
 - ⏳ Trench collapse events and additional tactical cards (Decoy, EMP)
-- ⏳ Win conditions, scoring, and audio
+- ⏳ Scoring refinements and audio
 
 ---
 

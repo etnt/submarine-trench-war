@@ -20,7 +20,8 @@ lobby_flow_test_() ->
           fun deals_full_hand/0,
           fun timeout_autofills/0,
           fun fog_hides_distant_enemy/0,
-          fun active_sonar_reveals/0 ]
+          fun active_sonar_reveals/0,
+          fun objectives_in_game_state/0 ]
     end}.
 
 setup() ->
@@ -225,6 +226,71 @@ active_sonar_reveals() ->
     ok = stw_game:set_sonar_mode(GamePid, P2, <<"active">>),
     GS = game_state_for(P1),
     ?assert(has_sub(P2, maps:get(<<"submarines">>, GS))).
+
+%% The per-player game_state carries the Phase 7 objective layer: the
+%% moving extraction zone, the win threshold, and a (possibly empty) list
+%% of visible data nodes.
+objectives_in_game_state() ->
+    flush(),
+    {P1, T1, undefined} = stw_lobby:hello(undefined, <<"Wes">>),
+    {ok, _Room, GamePid} = stw_lobby:create_game(T1, #{}),
+    {ok, true} = stw_game:join(GamePid, P1, <<"Wes">>, self()),
+    {P2, _T2, _} = stw_lobby:hello(undefined, <<"Xan">>),
+    {ok, false} = stw_game:join(GamePid, P2, <<"Xan">>, self()),
+    flush(),
+    ok = stw_game:start_game(GamePid, P1),
+    GS = game_state_for(P1),
+    Ext = maps:get(<<"extraction">>, GS),
+    ?assert(is_integer(maps:get(<<"x">>, Ext))),
+    ?assert(is_integer(maps:get(<<"y">>, Ext))),
+    ?assertEqual(3, maps:get(<<"win_data">>, GS)),
+    ?assert(is_list(maps:get(<<"data_nodes">>, GS))).
+
+%% --- pure objective-logic tests ---------------------------------------
+
+%% A submarine ending its round on a data node downloads it: its data count
+%% rises and the node is removed from the board.
+collect_data_node_test() ->
+    Subs = #{<<"a">> => sub(3, 5, 0)},
+    {Subs1, Nodes1} = stw_game:resolve_data(Subs, [{3, 5}, {8, 8}], []),
+    ?assertEqual(1, maps:get(data, maps:get(<<"a">>, Subs1))),
+    ?assertEqual([{8, 8}], Nodes1).
+
+%% A submarine that is not standing on a node collects nothing.
+no_collect_off_node_test() ->
+    Subs = #{<<"a">> => sub(4, 4, 0)},
+    {Subs1, Nodes1} = stw_game:resolve_data(Subs, [{3, 5}], []),
+    ?assertEqual(0, maps:get(data, maps:get(<<"a">>, Subs1))),
+    ?assertEqual([{3, 5}], Nodes1).
+
+%% Only one submarine collects a shared node tile (deterministic by id).
+one_collector_per_node_test() ->
+    Subs = #{<<"a">> => sub(3, 5, 0), <<"b">> => sub(3, 5, 0)},
+    {Subs1, Nodes1} = stw_game:resolve_data(Subs, [{3, 5}], []),
+    Total = maps:get(data, maps:get(<<"a">>, Subs1)) +
+            maps:get(data, maps:get(<<"b">>, Subs1)),
+    ?assertEqual(1, Total),
+    ?assertEqual([], Nodes1).
+
+%% A torpedoed submarine carrying data drops one recoverable node on its tile.
+data_theft_drops_node_test() ->
+    Subs = #{<<"a">> => sub(7, 7, 2)},
+    Phases = [#{<<"events">> =>
+                [#{<<"type">> => <<"hit">>, <<"player_id">> => <<"a">>,
+                   <<"weapon">> => <<"torpedo">>, <<"damage">> => 2}]}],
+    {Subs1, Nodes1} = stw_game:resolve_data(Subs, [], Phases),
+    ?assertEqual(1, maps:get(data, maps:get(<<"a">>, Subs1))),
+    ?assertEqual([{7, 7}], Nodes1).
+
+%% The patrolling extraction path is non-empty and rides the top interior row.
+extraction_path_test() ->
+    Path = stw_game:extraction_path(stw_board:default()),
+    ?assert(length(Path) >= 1),
+    [?assertEqual(1, Y) || {_X, Y} <- Path].
+
+sub(X, Y, Data) ->
+    #{x => X, y => Y, facing => <<"N">>, depth => <<"shallow">>,
+      hull => 10, alive => true, data => Data}.
 
 %% --- helpers ----------------------------------------------------------
 

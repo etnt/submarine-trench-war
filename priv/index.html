@@ -122,6 +122,16 @@
     }
     .modal-head h2 { margin: 0; flex: 1; font-size: 1.1rem; }
     .modal-body { padding: 8px 18px 18px; overflow-y: auto; }
+    .go-summary { font-size: 1rem; margin: 4px 0 14px; }
+    .go-standings { display: flex; flex-direction: column; gap: 6px; }
+    .go-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 10px; border-radius: 6px; background: #04161f;
+    }
+    .go-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+    .go-name { flex: 1; }
+    .go-data { color: var(--accent); font-variant-numeric: tabular-nums; }
+    .go-hull { opacity: 0.7; min-width: 78px; text-align: right; }
     .help-section h3 {
       margin: 16px 0 6px; font-size: 0.95rem; color: var(--accent);
     }
@@ -253,7 +263,7 @@
 <body>
   <header>
     <h1>Submarine Trench War</h1>
-    <div class="subtitle">Phase 6 &mdash; fog of war &amp; visibility</div>
+    <div class="subtitle">Phase 7 &mdash; the black box hunt</div>
   </header>
 
   <main>
@@ -264,6 +274,16 @@
           <button id="btnHelpClose">Close</button>
         </div>
         <div class="modal-body" id="helpBody"></div>
+      </div>
+    </div>
+
+    <div id="gameOverModal" class="modal-overlay hidden">
+      <div class="modal">
+        <div class="modal-head">
+          <h2 id="gameOverTitle">Match Over</h2>
+          <button id="btnGameOverClose">Close</button>
+        </div>
+        <div class="modal-body" id="gameOverBody"></div>
       </div>
     </div>
 
@@ -383,6 +403,11 @@
       inkClouds: [],    // [{ x, y }] ink clouds blocking vision
       spectator: false, // am I watching with a full-board view?
       sonarMode: "passive", // my sonar mode: passive | active
+      dataNodes: [],    // [{ x, y }] data nodes I can currently see
+      extraction: null, // { x, y } current extraction zone, or null
+      winData: 3,       // data needed to extract
+      myData: 0,        // data my sub is carrying
+      gameOver: false,  // has the match ended?
       roster: {},       // player_id -> { color, display_name } (from game_started)
     };
 
@@ -423,6 +448,9 @@
       pingTimer: $("pingTimer"), btnSonar: $("btnSonar"),
       btnHelp: $("btnHelp"), btnHelpClose: $("btnHelpClose"),
       helpModal: $("helpModal"), helpBody: $("helpBody"),
+      gameOverModal: $("gameOverModal"), gameOverBody: $("gameOverBody"),
+      gameOverTitle: $("gameOverTitle"),
+      btnGameOverClose: $("btnGameOverClose"),
     };
     const ctx = el.canvas.getContext("2d");
     // Pixel<->cell mapping from the latest board render, used for hover tooltips.
@@ -439,6 +467,13 @@
       line.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
       el.log.appendChild(line);
       el.log.scrollTop = el.log.scrollHeight;
+    }
+
+    // Escape user-supplied text before injecting it into innerHTML.
+    function esc(s) {
+      return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[c]));
     }
 
     // --- connection -----------------------------------------------------
@@ -519,6 +554,8 @@
         case "round_result": onRoundResult(p); break;
         case "revealed_cards": onRevealedCards(p); break;
         case "game_state": onGameState(p); break;
+        case "extraction_announced": onExtractionAnnounced(p); break;
+        case "game_over": onGameOver(p); break;
         case "error": onError(p); break;
         case "pong": break;
         default: break;
@@ -581,6 +618,8 @@
 
     function onGameStarted(p) {
       state.roomCode = p.room_code;
+      state.gameOver = false;
+      el.gameOverModal.classList.add("hidden");
       if (p.board) state.board = p.board;
       if (p.submarines) state.subs = p.submarines;
       // game_started is unfogged: record every player's colour + name so we
@@ -750,6 +789,12 @@
       state.spectator = !!p.spectator;
       if (typeof p.sonar_mode === "string") state.sonarMode = p.sonar_mode;
       state.inkClouds = p.ink_clouds || [];
+      state.dataNodes = p.data_nodes || [];
+      state.extraction = p.extraction || null;
+      if (typeof p.win_data === "number") state.winData = p.win_data;
+      if (p.you && typeof p.you.data_collected === "number") {
+        state.myData = p.you.data_collected;
+      }
       if (Array.isArray(p.visible_tiles)) {
         state.visibleTiles = state.spectator
           ? null
@@ -762,7 +807,54 @@
         renderGamePlayers({ players: p.submarines });
         updateWhoami();
       }
-      el.roundTag.textContent = "Round " + state.round;
+      el.roundTag.textContent = "Round " + state.round +
+        (state.spectator ? "" : "  \u00b7  Data " + state.myData + "/" + state.winData);
+    }
+
+    // A submarine has collected enough data to extract: revealed to all.
+    function onExtractionAnnounced(p) {
+      const s = (state.subs || []).find((x) => x.player_id === p.player_id);
+      const nm = s ? (s.display_name || p.player_id) :
+        (state.roster[p.player_id] || {}).display_name || p.player_id;
+      log("warn", "\u26a0 " + nm + " is extraction-ready (" +
+        p.data_collected + " data) \u2014 position revealed!");
+    }
+
+    // The match has ended. Show the standings and the winner.
+    function onGameOver(p) {
+      state.gameOver = true;
+      const winId = p.winner;
+      const you = state.playerId;
+      let title;
+      if (p.reason === "draw" || !winId) title = "Mutual Destruction";
+      else if (winId === you) title = "Victory!";
+      else title = "Defeat";
+      el.gameOverTitle.textContent = title;
+
+      const reasonText = {
+        extracted: "extracted the black-box data",
+        survivor: "was the last submarine running",
+        draw: "no submarines survived",
+      }[p.reason] || p.reason || "";
+      const winName = winId
+        ? ((state.roster[winId] || {}).display_name || winId)
+        : "No one";
+      const rows = (p.standings || []).map((st) => {
+        const me = st.player_id === you ? " (you)" : "";
+        const crown = st.player_id === winId ? " \u265b" : "";
+        return '<div class="go-row">' +
+          '<span class="go-dot" style="background:' + st.color + '"></span>' +
+          '<span class="go-name">' + esc(st.display_name) + me + crown + '</span>' +
+          '<span class="go-data">Data ' + st.data_collected + '</span>' +
+          '<span class="go-hull">' +
+            (st.alive ? ("Hull " + st.hull) : "destroyed") + '</span>' +
+          '</div>';
+      }).join("");
+      el.gameOverBody.innerHTML =
+        '<p class="go-summary"><strong>' + esc(winName) + '</strong> ' +
+        esc(reasonText) + '.</p>' +
+        '<div class="go-standings">' + rows + '</div>';
+      el.gameOverModal.classList.remove("hidden");
     }
 
     function onError(p) {
@@ -967,6 +1059,7 @@
       }
 
       drawFog(g, ox, oy, size, t);
+      drawObjectives(g, ox, oy, size, t);
 
       const subs = state.anim ? animatedSubs(t) : state.subs;
       if (!state.anim) drawGhostPath(g, ox, oy, size);
@@ -1006,24 +1099,40 @@
       });
     }
 
-    function drawFeature(g, ch, px, py, size, t) {
-      const cx = px + size / 2, cy = py + size / 2, r = size * 0.28;
+    // Draw the objective layer above the fog: data nodes revealed within
+    // sonar range (cyan diamonds) and the patrolling extraction zone (green
+    // target). Both are sent dynamically per player, not baked into the grid.
+    function drawObjectives(g, ox, oy, size, t) {
       const pulse = 0.6 + 0.4 * Math.sin(t / 400);
-      if (ch === "D") {              // data node: cyan diamond
+      const r = size * 0.28;
+      (state.dataNodes || []).forEach((c) => {
+        const cx = ox + c.x * size + size / 2, cy = oy + c.y * size + size / 2;
         g.save();
         g.translate(cx, cy);
         g.rotate(Math.PI / 4);
         g.fillStyle = `rgba(60,204,255,${0.55 * pulse + 0.3})`;
         g.fillRect(-r, -r, r * 2, r * 2);
         g.restore();
-      } else if (ch === "X") {       // extraction: green target
-        g.strokeStyle = "#4caf50";
+      });
+      const ex = state.extraction;
+      if (ex) {
+        const px = ox + ex.x * size, py = oy + ex.y * size;
+        const cx = px + size / 2, cy = py + size / 2;
+        g.save();
+        g.strokeStyle = `rgba(76,175,80,${0.6 + 0.4 * pulse})`;
         g.lineWidth = 2;
-        g.strokeRect(px + size * 0.2, py + size * 0.2, size * 0.6, size * 0.6);
+        g.strokeRect(px + size * 0.18, py + size * 0.18, size * 0.64, size * 0.64);
         g.beginPath();
         g.arc(cx, cy, r * 0.6, 0, Math.PI * 2);
         g.stroke();
-      } else if (ch === "M") {       // mine: red spiky dot
+        g.restore();
+      }
+    }
+
+    function drawFeature(g, ch, px, py, size, t) {
+      const cx = px + size / 2, cy = py + size / 2, r = size * 0.28;
+      const pulse = 0.6 + 0.4 * Math.sin(t / 400);
+      if (ch === "M") {              // mine: red spiky dot
         g.fillStyle = "#e05555";
         g.beginPath();
         g.arc(cx, cy, r * 0.5, 0, Math.PI * 2);
@@ -1595,7 +1704,28 @@
         `<div class="help-desc">Blocks vision through its tile for 2 rounds, ` +
         `hiding whatever sits behind it \u2014 even from active sonar.</div></div>` +
         `<p class="help-intro">Destroyed or watching from the sidelines? ` +
-        `Spectators see the whole board with no fog.</p></div>`;
+        `Spectators see the whole board with no fog.</p></div>` +
+        `<div class="help-section"><h3>The Black Box hunt</h3>` +
+        `<p class="help-intro">Win by collecting telemetry and escaping. Your ` +
+        `data count is shown next to the round number.</p>` +
+        `<div class="help-row"><div class="help-glyph" style="color:#3cf">\u25c8</div>` +
+        `<div class="help-name">Data node</div>` +
+        `<div class="help-desc">Hidden until it enters your sonar range. End a ` +
+        `round on top of one to download it (+1 data).</div></div>` +
+        `<div class="help-row"><div class="help-glyph" style="color:#4caf50">\u25ce</div>` +
+        `<div class="help-name">Extraction zone</div>` +
+        `<div class="help-desc">A surface rescue ship that patrols the top of ` +
+        `the map. Reach it at Shallow depth carrying ${state.winData} data to ` +
+        `extract and win.</div></div>` +
+        `<div class="help-row"><div class="help-glyph" style="color:#ffd45e">\u26a0</div>` +
+        `<div class="help-name">Announcement</div>` +
+        `<div class="help-desc">Once you hold enough data to extract, your ` +
+        `position is revealed to everyone for a turn \u2014 the whole fleet ` +
+        `hunts the leader.</div></div>` +
+        `<div class="help-row"><div class="help-glyph" style="color:#e05555">\u27a4</div>` +
+        `<div class="help-name">Data theft</div>` +
+        `<div class="help-desc">Torpedo a data-laden rival and they drop a ` +
+        `node on their tile for anyone to recover.</div></div></div>`;
       el.helpBody.dataset.built = "1";
     }
 
@@ -1606,6 +1736,12 @@
     el.btnHelpClose.addEventListener("click", closeHelp);
     el.helpModal.addEventListener("click", (ev) => {
       if (ev.target === el.helpModal) closeHelp();
+    });
+
+    function closeGameOver() { el.gameOverModal.classList.add("hidden"); }
+    el.btnGameOverClose.addEventListener("click", closeGameOver);
+    el.gameOverModal.addEventListener("click", (ev) => {
+      if (ev.target === el.gameOverModal) closeGameOver();
     });
     document.addEventListener("keydown", (ev) => {
       if (ev.key === "Escape" && !el.helpModal.classList.contains("hidden")) closeHelp();

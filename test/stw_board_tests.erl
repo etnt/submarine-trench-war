@@ -35,6 +35,24 @@ grid_rectangular_test() ->
     [?assertEqual(W, byte_size(Row)) || Row <- Grid],
     ok.
 
+%% The map exposes its authored data nodes and extraction zone.
+objectives_present_test() ->
+    B = stw_board:default(),
+    ?assert(length(stw_board:data_nodes(B)) >= 1),
+    {EX, EY} = stw_board:extraction(B),
+    ?assert(is_integer(EX)),
+    ?assert(is_integer(EY)).
+
+%% Data nodes and the extraction zone are hidden from the static grid: they
+%% are revealed dynamically per player, so no $D or $X leaks into the rows.
+objectives_hidden_from_grid_test() ->
+    B = stw_board:default(),
+    #{<<"grid">> := Grid} = stw_board:to_json(B),
+    Joined = list_to_binary(Grid),
+    ?assertEqual(nomatch, binary:match(Joined, <<"D">>)),
+    ?assertEqual(nomatch, binary:match(Joined, <<"X">>)),
+    ok.
+
 %% Every non-wall tile must be reachable from a spawn: flood-fill from one
 %% spawn and confirm it covers all open tiles. Catches map-authoring errors
 %% that would strand data nodes or the extraction zone.
