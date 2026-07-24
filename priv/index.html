@@ -105,11 +105,6 @@
     }
     .map-tip .tip-title { font-weight: 600; color: var(--accent); }
     .map-tip .tip-sub { color: #9fb6c4; }
-    header { position: relative; }
-    .help-btn {
-      position: absolute; top: 0; right: 0;
-      padding: 6px 12px; font-weight: 600;
-    }
     .modal-overlay {
       position: fixed; inset: 0; z-index: 100;
       display: flex; align-items: center; justify-content: center;
@@ -249,7 +244,6 @@
   <header>
     <h1>Submarine Trench War</h1>
     <div class="subtitle">Phase 5 &mdash; hazards &amp; combat</div>
-    <button id="btnHelp" class="help-btn" title="How to play">? Help</button>
   </header>
 
   <main>
@@ -327,6 +321,7 @@
         <div class="hand-label subtitle">Your hand</div>
         <div class="palette" id="palette"></div>
         <div class="controls" style="margin-top: 10px;">
+          <button id="btnHelp" title="How to play">? Help</button>
           <button id="btnClear">Clear</button>
           <button id="btnLock" class="primary" disabled>Lock In</button>
           <span id="progToast" class="subtitle" style="flex:1"></span>
@@ -558,7 +553,10 @@
       state.roomCode = p.room_code;
       state.isHost = (p.host_id === state.playerId);
       if (p.phase === "playing") {
-        renderGamePlayers({ players: state.subs.length ? state.subs : p.players });
+        // Prefer the submarines (which carry colors) over the colorless
+        // lobby player list so the fleet swatches don't vanish.
+        if (state.subs.length) renderGamePlayers({ players: state.subs });
+        updateWhoami();
         setView("game");
       } else { renderLobby(p); if (state.view !== "lobby") setView("lobby"); }
     }
@@ -1163,7 +1161,7 @@
           `background:${me.color};box-shadow:0 0 6px ${me.color};` +
           "margin-right:6px;vertical-align:middle";
         el.whoami.appendChild(dot);
-        el.whoami.appendChild(document.createTextNode(name + " \u2014 your sub"));
+        el.whoami.appendChild(document.createTextNode(name));
       } else {
         el.whoami.textContent = name;
       }
