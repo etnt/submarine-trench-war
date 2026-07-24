@@ -57,7 +57,7 @@ nav_cards() ->
 %% @doc Tactical cards: the combat half of the deck.
 -spec tactical_cards() -> [binary()].
 tactical_cards() ->
-    [<<"torpedo">>, <<"depth_charge">>, <<"sonar_ping">>].
+    [<<"torpedo">>, <<"depth_charge">>, <<"sonar_ping">>, <<"ink_cloud">>].
 
 %% @doc Every card kind the engine understands.
 -spec card_kinds() -> [binary()].
@@ -78,7 +78,8 @@ resolve_round(Board, Subs0, Programs0) ->
     St0 = #{subs => ensure_fields(Subs0),
             programs => Programs0,
             armed => [],
-            cleared => []},
+            cleared => [],
+            ink => []},
     {StN, Rev} =
         lists:foldl(
           fun(R, {St, Acc}) ->
@@ -91,7 +92,8 @@ resolve_round(Board, Subs0, Programs0) ->
           {St0, []},
           lists:seq(0, ?REGISTERS - 1)),
     {StF, Phases} = final_detonate(Board, StN, lists:reverse(Rev)),
-    Effects = #{mines_cleared => lists:usort(maps:get(cleared, StF))},
+    Effects = #{mines_cleared => lists:usort(maps:get(cleared, StF)),
+                ink_clouds => lists:usort(maps:get(ink, StF))},
     {maps:get(subs, StF), Phases, Effects}.
 
 %% --- one register -----------------------------------------------------
@@ -101,12 +103,15 @@ apply_register(Board, St, R) ->
     Programs = maps:get(programs, St),
     ArmedPrev = maps:get(armed, St),
     Cleared0 = maps:get(cleared, St),
+    Ink0 = maps:get(ink, St),
     %% 1. depth charges armed last register go off now (1-phase delay)
     {Subs1, E1} = detonate(Subs0, ArmedPrev),
     %% 2. rotations + depth changes
     {Subs2, E2} = apply_turns(Subs1, Programs, R),
     %% 3. weapons + arming
     {Subs3, E3, ArmedNow} = apply_fires(Board, Subs2, Programs, R),
+    %% 3b. deployables (ink clouds) drop on the sub's current tile
+    {Ed, Ink1} = apply_deploys(Subs3, Programs, R, Ink0),
     %% 4. movement (with ramming)
     Movers = build_movers(Subs3, Programs, R),
     {Subs4, E4} = step_movers(Board, Subs3, Movers, true),
@@ -120,8 +125,8 @@ apply_register(Board, St, R) ->
     %% 8. destruction
     {Subs8, E8} = reap(Subs7),
     St1 = St#{subs => Subs8, programs => Programs1,
-              armed => ArmedNow, cleared => Cleared1},
-    {St1, E1 ++ E2 ++ E3 ++ E4 ++ E5 ++ E6 ++ E7 ++ E8}.
+              armed => ArmedNow, cleared => Cleared1, ink => Ink1},
+    {St1, E1 ++ E2 ++ E3 ++ Ed ++ E4 ++ E5 ++ E6 ++ E7 ++ E8}.
 
 apply_turns(Subs, Programs, R) ->
     lists:foldl(
@@ -180,6 +185,25 @@ apply_fires(Board, Subs, Programs, R) ->
           end
       end,
       {Subs, [], []},
+      alive_ids(Subs)).
+
+%% Deploy tactical clouds. An ink cloud drops on the sub's current tile and
+%% is recorded as an effect (the game server tracks its lifetime); it does
+%% not alter movement, so subs are returned unchanged.
+apply_deploys(Subs, Programs, R, Ink0) ->
+    lists:foldl(
+      fun(Id, {Evs, Ink}) ->
+          case action(card_at(Programs, Id, R)) of
+              {deploy, ink} ->
+                  {X, Y} = pos(Subs, Id),
+                  {Evs ++ [event(<<"ink_cloud">>, Id,
+                                 #{<<"x">> => X, <<"y">> => Y})],
+                   [{X, Y} | Ink]};
+              _ ->
+                  {Evs, Ink}
+          end
+      end,
+      {[], Ink0},
       alive_ids(Subs)).
 
 %% A straight beam (torpedo or sonar) from the sub along its facing. Depth
@@ -492,6 +516,7 @@ action(<<"surface">>) -> {depth, <<"shallow">>};
 action(<<"torpedo">>) -> {fire, torpedo};
 action(<<"sonar_ping">>) -> {fire, sonar};
 action(<<"depth_charge">>) -> {arm, depth_charge};
+action(<<"ink_cloud">>) -> {deploy, ink};
 action(_) -> hold.
 
 depth_event(<<"deep">>) -> <<"dive">>;

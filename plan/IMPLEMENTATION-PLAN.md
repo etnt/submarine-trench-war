@@ -134,13 +134,13 @@ Goal: add danger and direct player interaction.
 
 Goal: limited vision that turns navigation into exploration.
 
-* [ ] Server-side per-player visibility computation (cone forward + radius).
-* [ ] Send each player only what they can see (no full-board leaks).
-* [ ] Active vs Passive sonar: active reveals more but broadcasts position.
-* [ ] Ink Cloud: block tile visibility for all players for 2 turns.
-* [ ] Depth affects sonar range (Deep sees less).
-* [ ] Client: render fog, revealed tiles, and sonar contacts.
-* [ ] Spectator mode: eliminated/late players get full-board view.
+* [x] Server-side per-player visibility computation (cone forward + radius).
+* [x] Send each player only what they can see (no full-board leaks).
+* [x] Active vs Passive sonar: active reveals more but broadcasts position.
+* [x] Ink Cloud: block tile visibility for all players for 2 turns.
+* [x] Depth affects sonar range (Deep sees less).
+* [x] Client: render fog, revealed tiles, and sonar contacts.
+* [x] Spectator mode: eliminated/late players get full-board view.
 
 **Milestone:** Players see only their surroundings; information becomes a
 resource.

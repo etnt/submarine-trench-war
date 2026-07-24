@@ -18,7 +18,9 @@ lobby_flow_test_() ->
           fun host_starts_game/0,
           fun full_round_resolves/0,
           fun deals_full_hand/0,
-          fun timeout_autofills/0 ]
+          fun timeout_autofills/0,
+          fun fog_hides_distant_enemy/0,
+          fun active_sonar_reveals/0 ]
     end}.
 
 setup() ->
@@ -139,8 +141,10 @@ full_round_resolves() ->
     ?assertEqual(5, length(Phases)),
     [Ph0 | _] = Phases,
     ?assertEqual(0, maps:get(<<"register">>, Ph0)),
-    ?assertEqual(2, length(maps:get(<<"submarines">>, Ph0))),
-    ?assertEqual(2, length(maps:get(<<"submarines">>, RR))),
+    %% round_result is now fogged per player: the first push is P1's view,
+    %% and with the two spawns at opposite corners P1 only sees itself.
+    ?assert(has_sub(P1, maps:get(<<"submarines">>, Ph0))),
+    ?assert(has_sub(P1, maps:get(<<"submarines">>, RR))),
 
     %% after resolution a fresh round is announced with fresh hands
     RS2 = expect_push(<<"round_started">>),
@@ -188,6 +192,40 @@ timeout_autofills() ->
     RR = expect_push(<<"round_result">>),
     ?assertEqual(5, length(maps:get(<<"phases">>, RR))).
 
+%% Distant enemies are hidden by fog of war: at opposite spawn corners in
+%% passive mode a player sees only its own submarine.
+fog_hides_distant_enemy() ->
+    flush(),
+    {P1, T1, undefined} = stw_lobby:hello(undefined, <<"Rex">>),
+    {ok, _Room, GamePid} = stw_lobby:create_game(T1, #{}),
+    {ok, true} = stw_game:join(GamePid, P1, <<"Rex">>, self()),
+    {P2, _T2, _} = stw_lobby:hello(undefined, <<"Syl">>),
+    {ok, false} = stw_game:join(GamePid, P2, <<"Syl">>, self()),
+    flush(),
+    ok = stw_game:start_game(GamePid, P1),
+    GS = game_state_for(P1),
+    ?assertEqual(false, maps:get(<<"spectator">>, GS)),
+    Subs = maps:get(<<"submarines">>, GS),
+    ?assert(has_sub(P1, Subs)),
+    ?assertNot(has_sub(P2, Subs)),
+    ?assert(length(maps:get(<<"visible_tiles">>, GS)) > 0).
+
+%% Switching to active sonar reveals a player to everyone, even across the
+%% board, and re-broadcasts fresh views to all seated players.
+active_sonar_reveals() ->
+    flush(),
+    {P1, T1, undefined} = stw_lobby:hello(undefined, <<"Uma">>),
+    {ok, _Room, GamePid} = stw_lobby:create_game(T1, #{}),
+    {ok, true} = stw_game:join(GamePid, P1, <<"Uma">>, self()),
+    {P2, _T2, _} = stw_lobby:hello(undefined, <<"Vic">>),
+    {ok, false} = stw_game:join(GamePid, P2, <<"Vic">>, self()),
+    flush(),
+    ok = stw_game:start_game(GamePid, P1),
+    _ = game_state_for(P1),
+    ok = stw_game:set_sonar_mode(GamePid, P2, <<"active">>),
+    GS = game_state_for(P1),
+    ?assert(has_sub(P2, maps:get(<<"submarines">>, GS))).
+
 %% --- helpers ----------------------------------------------------------
 
 expect_push(Type) ->
@@ -196,6 +234,20 @@ expect_push(Type) ->
     after 1000 ->
         erlang:error({timeout_waiting_for, Type})
     end.
+
+%% Selectively receive the personalized game_state for a specific player.
+game_state_for(PlayerId) ->
+    receive
+        {push, <<"game_state">>,
+         #{<<"you">> := #{<<"player_id">> := PlayerId}} = Payload} ->
+            Payload
+    after 1000 ->
+        erlang:error({timeout_game_state, PlayerId})
+    end.
+
+%% True when a submarine snapshot list contains the given player.
+has_sub(PlayerId, Subs) ->
+    lists:any(fun(Su) -> maps:get(<<"player_id">>, Su) =:= PlayerId end, Subs).
 
 %% Selectively receive the private deal_hand for a specific player.
 deal_for(PlayerId) ->

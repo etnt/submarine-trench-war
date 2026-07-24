@@ -208,6 +208,16 @@
       margin-right: 10px;
     }
     .ping-timer.urgent { color: var(--err); border-color: var(--err); }
+    .sonar-btn {
+      font-size: 0.78rem; margin-left: 10px; padding: 3px 12px;
+      border: 1px solid var(--accent-dim); border-radius: 12px;
+      background: #02090f; color: var(--muted); cursor: pointer;
+      vertical-align: middle;
+    }
+    .sonar-btn.active {
+      color: #ffd45e; border-color: #ffd45e;
+      box-shadow: 0 0 10px rgba(255, 212, 94, 0.4);
+    }
     .hand-label { margin: 2px 0 6px; }
     .slots { display: flex; gap: 8px; margin-bottom: 12px; }
     .slot {
@@ -243,7 +253,7 @@
 <body>
   <header>
     <h1>Submarine Trench War</h1>
-    <div class="subtitle">Phase 5 &mdash; hazards &amp; combat</div>
+    <div class="subtitle">Phase 6 &mdash; fog of war &amp; visibility</div>
   </header>
 
   <main>
@@ -305,7 +315,9 @@
 
     <!-- GAME: board + fleet -->
     <div class="panel hidden" id="viewGame">
-      <h2>Match In Progress <span id="roundTag" class="badge">Round 1</span></h2>
+      <h2>Match In Progress <span id="roundTag" class="badge">Round 1</span>
+        <button id="btnSonar" class="sonar-btn" title="Toggle active/passive sonar">Sonar: Passive</button>
+      </h2>
       <canvas id="board" width="600" height="360"></canvas>
       <div id="mapTip" class="map-tip hidden"></div>
 
@@ -367,6 +379,11 @@
       hand: [],         // my dealt cards this round: [{ id, kind }]
       timerEndsAt: null,// Ping Timer deadline (epoch ms), or null
       pendingRound: null,// next-round setup buffered until a replay ends
+      visibleTiles: null,// Set of "x,y" I can currently see, or null (no fog)
+      inkClouds: [],    // [{ x, y }] ink clouds blocking vision
+      spectator: false, // am I watching with a full-board view?
+      sonarMode: "passive", // my sonar mode: passive | active
+      roster: {},       // player_id -> { color, display_name } (from game_started)
     };
 
     // Card metadata: label + glyph for the UI.
@@ -381,6 +398,7 @@
       torpedo:        { label: "Torpedo", glyph: "\u27a4" },
       depth_charge:   { label: "D.Charge", glyph: "\u25c9" },
       sonar_ping:     { label: "Sonar",   glyph: "\u25cc" },
+      ink_cloud:      { label: "Ink",     glyph: "\u2601" },
     };
     // Cards that actually move the sub (for the path preview).
     const MOVE_CARDS = { ahead_standard: 1, ahead_flank: 2, reverse: 1 };
@@ -402,7 +420,7 @@
       slots: $("slots"), palette: $("palette"),
       btnClear: $("btnClear"), btnLock: $("btnLock"),
       progToast: $("progToast"), program: $("program"),
-      pingTimer: $("pingTimer"),
+      pingTimer: $("pingTimer"), btnSonar: $("btnSonar"),
       btnHelp: $("btnHelp"), btnHelpClose: $("btnHelpClose"),
       helpModal: $("helpModal"), helpBody: $("helpBody"),
     };
@@ -565,6 +583,11 @@
       state.roomCode = p.room_code;
       if (p.board) state.board = p.board;
       if (p.submarines) state.subs = p.submarines;
+      // game_started is unfogged: record every player's colour + name so we
+      // can label fogged sonar contacts consistently for the rest of the game.
+      (p.submarines || []).forEach((s) => {
+        state.roster[s.player_id] = { color: s.color, display_name: s.display_name };
+      });
       renderGamePlayers({ players: p.submarines });
       updateWhoami();
       setView("game");
@@ -723,6 +746,16 @@
 
     function onGameState(p) {
       state.round = p.round || state.round;
+      // Fog-of-war state: what can I see, and am I spectating?
+      state.spectator = !!p.spectator;
+      if (typeof p.sonar_mode === "string") state.sonarMode = p.sonar_mode;
+      state.inkClouds = p.ink_clouds || [];
+      if (Array.isArray(p.visible_tiles)) {
+        state.visibleTiles = state.spectator
+          ? null
+          : new Set(p.visible_tiles.map((c) => c.x + "," + c.y));
+      }
+      updateSonarButton();
       if (p.submarines) {
         // Don't clobber an in-flight replay; it sets subs at the end.
         if (!state.anim) state.subs = p.submarines;
@@ -881,6 +914,23 @@
       renderSlots();
     }
 
+    // Flip between passive and active sonar. Active widens vision but the
+    // server broadcasts our position to every other player.
+    function toggleSonar() {
+      if (state.spectator) return;
+      const next = state.sonarMode === "active" ? "passive" : "active";
+      state.sonarMode = next;
+      updateSonarButton();
+      send("set_sonar_mode", { mode: next });
+    }
+
+    function updateSonarButton() {
+      const active = state.sonarMode === "active";
+      el.btnSonar.textContent = "Sonar: " + (active ? "Active" : "Passive");
+      el.btnSonar.classList.toggle("active", active);
+      el.btnSonar.classList.toggle("hidden", state.spectator);
+    }
+
     // --- board rendering -----------------------------------------------
     const TILE = {
       "#": { fill: "#0a2233" },   // wall
@@ -916,10 +966,44 @@
         }
       }
 
+      drawFog(g, ox, oy, size, t);
+
       const subs = state.anim ? animatedSubs(t) : state.subs;
       if (!state.anim) drawGhostPath(g, ox, oy, size);
       subs.forEach((s) => drawSub(g, s, ox, oy, size, t));
       if (state.anim) drawPhaseFX(g, ox, oy, size, t, subs);
+    }
+
+    // Shade every tile the player can't currently see, then draw ink clouds
+    // on top. Spectators (visibleTiles === null) see the whole board.
+    function drawFog(g, ox, oy, size, t) {
+      const b = state.board;
+      if (state.visibleTiles) {
+        g.save();
+        g.fillStyle = "rgba(2,10,16,0.82)";
+        for (let y = 0; y < b.height; y++) {
+          for (let x = 0; x < b.width; x++) {
+            if (!state.visibleTiles.has(x + "," + y)) {
+              g.fillRect(ox + x * size, oy + y * size, size, size);
+            }
+          }
+        }
+        g.restore();
+      }
+      const swirl = 0.5 + 0.5 * Math.sin(t / 500);
+      (state.inkClouds || []).forEach((c) => {
+        const cx = ox + c.x * size + size / 2, cy = oy + c.y * size + size / 2;
+        g.save();
+        g.fillStyle = `rgba(20,10,40,${0.72 + 0.15 * swirl})`;
+        g.beginPath();
+        g.arc(cx, cy, size * 0.55, 0, Math.PI * 2);
+        g.fill();
+        g.fillStyle = `rgba(90,60,150,${0.35 + 0.2 * swirl})`;
+        g.beginPath();
+        g.arc(cx, cy, size * 0.3, 0, Math.PI * 2);
+        g.fill();
+        g.restore();
+      });
     }
 
     function drawFeature(g, ch, px, py, size, t) {
@@ -1242,6 +1326,11 @@
     // Build keyframes and start an interpolated replay of the round.
     function startReplay(phases, finalSubs) {
       const colorById = {};
+      // Seed from the full roster so sonar contacts that pop in mid-replay
+      // still get their owner's colour even when we've never held their sub.
+      Object.keys(state.roster).forEach((id) => {
+        colorById[id] = state.roster[id].color;
+      });
       state.subs.forEach((s) => { colorById[s.player_id] = s.color; });
       (finalSubs || []).forEach((s) => {
         if (s.color) colorById[s.player_id] = s.color;
@@ -1374,6 +1463,7 @@
       renderSlots();
     });
     el.btnLock.addEventListener("click", lockRegisters);
+    el.btnSonar.addEventListener("click", toggleSonar);
 
     // --- map hover tooltips --------------------------------------------
     const FEATURE_TIP = {
@@ -1448,6 +1538,7 @@
       ["torpedo", "Fire straight ahead (2 damage). Only hits enemies at your depth; stops at walls."],
       ["depth_charge", "Arm a charge that detonates next register on your tile (3 damage), hitting any depth."],
       ["sonar_ping", "Ping straight ahead (1 damage). Hits any depth and reveals a struck enemy's cards."],
+      ["ink_cloud", "Release ink on your tile. It blocks vision through that tile for 2 rounds \u2014 great cover."],
     ];
     const ITEM_HELP = [
       ["#", "\u25a9", "#7fa8c0"],
@@ -1479,7 +1570,32 @@
         `cards into your registers, then Lock In. All fleets' cards execute in ` +
         `register order. Locking in with no cards holds position (a pass).</p></div>` +
         `<div class="help-section"><h3>Cards</h3>${cards}</div>` +
-        `<div class="help-section"><h3>Map items</h3>${items}</div>`;
+        `<div class="help-section"><h3>Map items</h3>${items}</div>` +
+        `<div class="help-section"><h3>Fog of war &amp; sonar</h3>` +
+        `<p class="help-intro">You only see the water around you: a ring of ` +
+        `tiles next to your sub plus a cone in the direction you face. ` +
+        `Everything else is dark, and walls block your line of sight. Enemy ` +
+        `subs appear only when they enter your view, so they slip in and out ` +
+        `of contact as everyone moves.</p>` +
+        `<div class="help-row"><div class="help-glyph">\u25cc</div>` +
+        `<div class="help-name">Passive</div>` +
+        `<div class="help-desc">Silent listening (the default). Short range, ` +
+        `but nobody is told where you are.</div></div>` +
+        `<div class="help-row"><div class="help-glyph" style="color:#ffd45e">\u25c9</div>` +
+        `<div class="help-name">Active</div>` +
+        `<div class="help-desc">Ping for a wider ring and a longer cone \u2014 ` +
+        `but your position is broadcast to every player until you go quiet ` +
+        `again. Use the Sonar button to toggle.</div></div>` +
+        `<div class="help-row"><div class="help-glyph">\u2b07</div>` +
+        `<div class="help-name">Depth</div>` +
+        `<div class="help-desc">Diving deep shortens your sonar cone \u2014 you ` +
+        `trade sight for protection from torpedoes.</div></div>` +
+        `<div class="help-row"><div class="help-glyph">\u2601</div>` +
+        `<div class="help-name">Ink cloud</div>` +
+        `<div class="help-desc">Blocks vision through its tile for 2 rounds, ` +
+        `hiding whatever sits behind it \u2014 even from active sonar.</div></div>` +
+        `<p class="help-intro">Destroyed or watching from the sidelines? ` +
+        `Spectators see the whole board with no fog.</p></div>`;
       el.helpBody.dataset.built = "1";
     }
 

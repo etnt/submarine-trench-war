@@ -172,7 +172,10 @@ seated player has locked, the round resolves.
 Errors: `invalid_register` if no program has been submitted yet.
 
 ### `set_sonar_mode`
-Choose active or passive sonar for the upcoming resolution.
+Choose active or passive sonar. Takes effect immediately: the server stores
+the mode and re-broadcasts a fresh `game_state` to every player (active sonar
+widens the caller's view but reveals their position to everyone via each
+view's `broadcasts` list). The mode persists across rounds until changed.
 
 ```json
 {
@@ -180,6 +183,9 @@ Choose active or passive sonar for the upcoming resolution.
   "payload": { "mode": "passive" }
 }
 ```
+
+`mode` is `passive` (short range, silent — the default) or `active` (longer
+range and a wider near radius, but broadcast to all players).
 
 ### `ping`
 Latency/keepalive probe. Server replies with `pong` echoing `seq`.
@@ -331,6 +337,12 @@ Players pick 5 of these IDs to `program_registers`.
 > **Phase 4 note:** the deck is navigation cards only for now. Tactical card
 > kinds (`torpedo`, `sonar_ping`, `ink_cloud`, …) enter the deck with the
 > combat phases.
+>
+> **Phase 6 note:** `ink_cloud` is now a live tactical card. Playing it
+> deploys an ink cloud on the sub's current tile: a `round_result` phase emits
+> an `ink_cloud` event (`{ "type": "ink_cloud", "player_id": ..., "x", "y" }`)
+> and the tile blocks vision through it for the next two rounds. Active clouds
+> are reported to clients in every `game_state` via `ink_clouds`.
 
 Navigation card `kind` values:
 `ahead_standard`, `ahead_flank`, `reverse`, `port_bank`, `starboard_bank`,
@@ -436,13 +448,44 @@ list applied in sequence.
 `collapse`, `extraction`.
 
 ### `game_state`
-Authoritative per-player view snapshot. Sent after resolution and on reconnect.
-Only includes what the receiving player can currently see (fog of war).
+Authoritative per-player view snapshot. Sent after resolution, when a player
+toggles sonar, and on reconnect. Only includes what the receiving player can
+currently see (fog of war).
 
-> **Phase 3 note:** fog of war is not implemented yet. The current server
-> sends `{ "round": N, "submarines": [ ...full sub_json... ] }` — the same
-> submarine shape as `game_started` — so every client sees all subs. The
-> fog-filtered shape below is the target for the visibility phase.
+> **Phase 6 note:** fog of war is now implemented. The server computes a
+> personalized snapshot per player. The implemented shape is:
+>
+> ```json
+> {
+>   "type": "game_state",
+>   "payload": {
+>     "round": 3,
+>     "sonar_mode": "passive",
+>     "spectator": false,
+>     "you": { ...full sub_json for the receiver... },
+>     "submarines": [ ...sub_json for each visible submarine (incl. self)... ],
+>     "visible_tiles": [ { "x": 5, "y": 5 }, { "x": 5, "y": 4 } ],
+>     "ink_clouds": [ { "x": 8, "y": 4 } ],
+>     "broadcasts": [ "p_cd34" ]
+>   }
+> }
+> ```
+>
+> * `sonar_mode` — the receiver's current mode (`passive` | `active`).
+> * `spectator` — `true` for eliminated or unseated viewers; they get the
+>   **full** board (`you` is `null`, `submarines` lists everyone, and
+>   `visible_tiles` is empty because nothing is fogged).
+> * `submarines` — own sub plus every enemy currently detected. A sub is
+>   detected if it is within the viewer's vision (near radius + forward cone,
+>   blocked by walls and by ink) **or** is actively pinging.
+> * `visible_tiles` — the tiles the viewer can see this round; the client
+>   shades everything else. Empty for spectators (no fog).
+> * `ink_clouds` — tiles currently covered by an ink cloud (blocks vision for
+>   two rounds).
+> * `broadcasts` — ids of other players who are on active sonar (their
+>   position is revealed to everyone).
+
+The original target shape (kept for reference) was:
 
 ```json
 {
@@ -498,6 +541,15 @@ End-of-round summary after all 5 phases resolve.
 > `mines_cleared` array lists mine tiles consumed this round (so clients can
 > remove those markers). The `standings` summary below is the target for
 > later phases once hull/data matter.
+>
+> **Phase 6 note:** `round_result` is now fogged **per player**. Each phase's
+> `submarines` snapshot is trimmed to the subs that viewer could see at that
+> moment (own sub always shown; active pingers always shown; others only when
+> within sonar range and not hidden by ink), while combat `events` are left
+> intact so weapon FX still play. The top-level `submarines` is the viewer's
+> own fogged end-of-round view. Enemies therefore appear and disappear across
+> phases as they move in and out of sonar. Spectators receive the full,
+> unfogged `phases` and `submarines`.
 
 ```json
 {

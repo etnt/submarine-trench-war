@@ -19,7 +19,7 @@
 
 -export([start_link/2]).
 -export([join/4, reconnect/3, leave/2, set_ready/3, start_game/2]).
--export([program_registers/3, lock_registers/2]).
+-export([program_registers/3, lock_registers/2, set_sonar_mode/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(COLORS, [<<"#3cf">>, <<"#f83">>, <<"#6c6">>, <<"#c6f">>]).
@@ -44,6 +44,8 @@
     programs = #{} :: #{binary() => [binary()]},
     submitted = #{} :: #{binary() => [binary()]},
     locked = [] :: [binary()],
+    sonar = #{} :: #{binary() => active | passive},
+    ink = #{} :: #{stw_board:coord() => pos_integer()},
     timer_ref :: reference() | undefined,
     timer_ends :: integer() | undefined
 }).
@@ -91,6 +93,12 @@ program_registers(GamePid, PlayerId, Cards) ->
 lock_registers(GamePid, PlayerId) ->
     gen_server:call(GamePid, {lock, PlayerId}).
 
+%% @doc Choose active or passive sonar for this player. Active sonar widens
+%% vision but broadcasts the player's position to everyone.
+-spec set_sonar_mode(pid(), binary(), binary() | atom()) -> ok.
+set_sonar_mode(GamePid, PlayerId, Mode) ->
+    gen_server:call(GamePid, {set_sonar_mode, PlayerId, Mode}).
+
 %% --- gen_server -------------------------------------------------------
 
 init({RoomCode, Opts}) ->
@@ -122,7 +130,7 @@ handle_call({reconnect, PlayerId, WsPid}, _From, S) ->
             case S1#state.phase of
                 playing ->
                     push(WsPid, <<"game_started">>, game_started_payload(S1)),
-                    push(WsPid, <<"game_state">>, game_state_payload(S1)),
+                    push(WsPid, <<"game_state">>, player_view(S1, PlayerId)),
                     push(WsPid, <<"round_started">>, round_started_payload(S1)),
                     push_hand(S1, PlayerId),
                     maybe_restore_program(S1, PlayerId, WsPid),
@@ -136,21 +144,13 @@ handle_call({reconnect, PlayerId, WsPid}, _From, S) ->
         false ->
             {reply, {error, not_in_room}, S}
     end;
-handle_call({set_ready, PlayerId, Ready}, _From, S) ->
-    case maps:find(PlayerId, S#state.players) of
-        {ok, P} ->
-            S1 = put_player(PlayerId, P#{ready => Ready}, S),
-            broadcast_lobby(S1),
-            {reply, ok, S1};
-        error ->
-            {reply, {error, not_in_room}, S}
-    end;
+
 handle_call({start_game, PlayerId}, _From, S) ->
     case PlayerId =:= S#state.host_id of
         true ->
             S1 = S#state{phase = playing, subs = place_subs(S),
                          round = 1, programs = #{}, locked = [],
-                         submitted = #{},
+                         submitted = #{}, ink = #{},
                          timer_ref = undefined, timer_ends = undefined},
             broadcast(S1, <<"game_started">>, game_started_payload(S1)),
             S2 = deal_and_announce(S1),
@@ -167,6 +167,24 @@ handle_call({program, PlayerId, Cards}, _From, S) ->
         {error, _} = Err ->
             {reply, Err, S}
     end;
+handle_call({set_ready, PlayerId, Ready}, _From, S) ->
+    case maps:find(PlayerId, S#state.players) of
+        {ok, P} ->
+            S1 = put_player(PlayerId, P#{ready => Ready}, S),
+            broadcast_lobby(S1),
+            {reply, ok, S1};
+        error ->
+            {reply, {error, not_in_room}, S}
+    end;
+handle_call({set_sonar_mode, PlayerId, Mode}, _From, S) ->
+    S1 = S#state{sonar = maps:put(PlayerId, parse_mode(Mode), S#state.sonar)},
+    %% Reflect the change immediately: switching to active widens this
+    %% player's view and reveals them to everyone, so refresh all snapshots.
+    case S1#state.phase of
+        playing -> broadcast_game_state(S1);
+        _ -> ok
+    end,
+    {reply, ok, S1};
 handle_call({lock, PlayerId}, _From, S) ->
     case S#state.phase =:= playing andalso maps:is_key(PlayerId, S#state.subs) of
         false ->
@@ -333,21 +351,158 @@ timer_payload(S) ->
     #{<<"duration_ms">> => ?PING_TIMER_MS,
       <<"ends_at">> => S#state.timer_ends}.
 
-game_state_payload(S) ->
-    #{<<"round">> => S#state.round,
-      <<"submarines">> => submarines_json(S)}.
-
 locked_payload(S, PlayerId) ->
     #{<<"player_id">> => PlayerId,
       <<"locked">> => length(S#state.locked),
       <<"total">> => length(seated_ids(S))}.
 
-round_result_payload(S, Phases, MinesCleared) ->
-    #{<<"round">> => S#state.round,
-      <<"phases">> => Phases,
-      <<"submarines">> => submarines_json(S),
-      <<"mines_cleared">> => [#{<<"x">> => X, <<"y">> => Y}
-                              || {X, Y} <- MinesCleared]}.
+%% --- fog of war -------------------------------------------------------
+
+%% Send every player (including spectators) their personalized fogged view.
+broadcast_game_state(S) ->
+    lists:foreach(
+      fun(Id) -> push(ws_of(Id, S), <<"game_state">>, player_view(S, Id)) end,
+      S#state.join_order).
+
+%% A single player's authoritative snapshot, trimmed to what they can see.
+%% Spectators (eliminated or not seated) get the full board.
+player_view(S, PlayerId) ->
+    Base = #{<<"round">> => S#state.round,
+             <<"sonar_mode">> => atom_to_binary(sonar_mode(S, PlayerId)),
+             <<"ink_clouds">> => ink_json(S)},
+    case is_spectator(S, PlayerId) of
+        true ->
+            Base#{<<"spectator">> => true,
+                  <<"you">> => null,
+                  <<"submarines">> => submarines_json(S),
+                  <<"visible_tiles">> => [],
+                  <<"broadcasts">> => []};
+        false ->
+            VisIds = visible_ids(S, PlayerId),
+            Tiles = visible_tiles(S, PlayerId),
+            Base#{<<"spectator">> => false,
+                  <<"you">> => sub_json(index_of(PlayerId, S), PlayerId, S),
+                  <<"submarines">> => [sub_json(index_of(Id, S), Id, S)
+                                       || Id <- VisIds],
+                  <<"visible_tiles">> => [coord_json(C) || C <- Tiles],
+                  <<"broadcasts">> => [Id || Id <- active_ids(S),
+                                             Id =/= PlayerId]}
+    end.
+
+%% Send every player their fogged replay of the round.
+broadcast_round_result(S, Phases, MinesCleared) ->
+    Ink = ink_tiles(S),
+    Actives = active_ids(S),
+    Cleared = [coord_json(C) || C <- MinesCleared],
+    lists:foreach(
+      fun(Id) ->
+          Payload = round_result_view(S, Id, Phases, Cleared, Ink, Actives),
+          push(ws_of(Id, S), <<"round_result">>, Payload)
+      end, S#state.join_order).
+
+round_result_view(S, PlayerId, Phases, Cleared, Ink, Actives) ->
+    Base = #{<<"round">> => S#state.round, <<"mines_cleared">> => Cleared},
+    case is_spectator(S, PlayerId) of
+        true ->
+            Base#{<<"phases">> => Phases,
+                  <<"submarines">> => submarines_json(S)};
+        false ->
+            Mode = sonar_mode(S, PlayerId),
+            FoggedPhases = [fog_phase(S#state.board, Ph, PlayerId, Mode,
+                                      Ink, Actives) || Ph <- Phases],
+            VisIds = visible_ids(S, PlayerId),
+            Base#{<<"phases">> => FoggedPhases,
+                  <<"submarines">> => [sub_json(index_of(Id, S), Id, S)
+                                       || Id <- VisIds]}
+    end.
+
+%% Trim a phase's submarine snapshot to the subs the viewer could see from
+%% their own position in that phase. Events (combat FX) are left intact.
+fog_phase(Board, Phase, PlayerId, Mode, Ink, Actives) ->
+    Snap = maps:get(<<"submarines">>, Phase),
+    case lists:keyfind(PlayerId, 2, [{E, maps:get(<<"player_id">>, E)}
+                                     || E <- Snap]) of
+        false ->
+            Phase;
+        _ ->
+            Me = snap_entry(Snap, PlayerId),
+            Visible = [E || E <- Snap,
+                            snap_visible(Board, Me, Mode, Ink, Actives,
+                                         PlayerId, E)],
+            Phase#{<<"submarines">> => Visible}
+    end.
+
+snap_entry(Snap, PlayerId) ->
+    hd([E || E <- Snap, maps:get(<<"player_id">>, E) =:= PlayerId]).
+
+%% Whether the viewer (whose snapshot entry is Me) can see snapshot entry E.
+snap_visible(Board, Me, Mode, Ink, Actives, PlayerId, E) ->
+    Id = maps:get(<<"player_id">>, E),
+    C = {maps:get(<<"x">>, E), maps:get(<<"y">>, E)},
+    Id =:= PlayerId
+        orelse lists:member(Id, Actives)
+        orelse (not lists:member(C, Ink)
+                andalso stw_vision:sees(Board, snap_sub(Me), Mode, C)).
+
+%% A vision-ready sub map from a wire snapshot entry.
+snap_sub(E) ->
+    #{x => maps:get(<<"x">>, E),
+      y => maps:get(<<"y">>, E),
+      facing => maps:get(<<"facing">>, E),
+      depth => maps:get(<<"depth">>, E)}.
+
+%% Ids of submarines the viewer can currently see (own + active pingers +
+%% anything within sonar range and not hidden by ink).
+visible_ids(S, PlayerId) ->
+    Me = maps:get(PlayerId, S#state.subs),
+    Mode = sonar_mode(S, PlayerId),
+    Ink = ink_tiles(S),
+    Actives = active_ids(S),
+    [Id || Id <- S#state.join_order,
+           maps:is_key(Id, S#state.subs),
+           begin
+               Sub = maps:get(Id, S#state.subs),
+               C = {maps:get(x, Sub), maps:get(y, Sub)},
+               Id =:= PlayerId
+                   orelse lists:member(Id, Actives)
+                   orelse (not lists:member(C, Ink)
+                           andalso stw_vision:sees(S#state.board, Me, Mode, C))
+           end].
+
+visible_tiles(S, PlayerId) ->
+    Me = maps:get(PlayerId, S#state.subs),
+    stw_vision:visible_tiles(S#state.board, Me, sonar_mode(S, PlayerId)).
+
+%% A player spectates when they hold no submarine or have been destroyed.
+is_spectator(S, PlayerId) ->
+    (not maps:is_key(PlayerId, S#state.subs)) orelse (not is_alive(PlayerId, S)).
+
+sonar_mode(S, PlayerId) ->
+    maps:get(PlayerId, S#state.sonar, passive).
+
+%% Players actively pinging: their position is broadcast to everyone.
+active_ids(S) ->
+    [Id || Id <- seated_ids(S), sonar_mode(S, Id) =:= active].
+
+parse_mode(<<"active">>) -> active;
+parse_mode(active) -> active;
+parse_mode(_) -> passive.
+
+%% --- ink clouds -------------------------------------------------------
+
+ink_tiles(S) -> maps:keys(S#state.ink).
+
+ink_json(S) -> [coord_json(C) || C <- ink_tiles(S)].
+
+%% Age clouds by one round, dropping any that have expired.
+tick_ink(Ink) ->
+    maps:from_list([{C, T - 1} || {C, T} <- maps:to_list(Ink), T - 1 > 0]).
+
+%% Freshly deployed clouds block visibility for two rounds.
+add_ink(Ink, Coords) ->
+    lists:foldl(fun(C, Acc) -> maps:put(C, 2, Acc) end, Ink, Coords).
+
+coord_json({X, Y}) -> #{<<"x">> => X, <<"y">> => Y}.
 
 %% --- round resolution -------------------------------------------------
 
@@ -358,7 +513,7 @@ deal_and_announce(S) ->
     S1 = S#state{hands = Hands},
     broadcast(S1, <<"round_started">>, round_started_payload(S1)),
     lists:foreach(fun(Id) -> push_hand(S1, Id) end, seated_ids(S1)),
-    broadcast(S1, <<"game_state">>, game_state_payload(S1)),
+    broadcast_game_state(S1),
     S1.
 
 %% Build a hand per seated player, sized by that sub's remaining hull.
@@ -480,16 +635,21 @@ resolve_round(S, AutoFilled) ->
     {Subs2, Phases, Effects} =
         stw_engine:resolve_round(S0#state.board, S0#state.subs, S0#state.programs),
     Cleared = maps:get(mines_cleared, Effects, []),
+    NewInk = maps:get(ink_clouds, Effects, []),
     Board1 = lists:foldl(fun(C, B) -> stw_board:clear_mine(B, C) end,
                          S0#state.board, Cleared),
     S1 = S0#state{subs = Subs2, board = Board1},
-    broadcast(S1, <<"round_result">>, round_result_payload(S1, Phases, Cleared)),
+    %% Fog the replay per player using the ink clouds that were active during
+    %% the round (before this round's fresh deploys take hold).
+    broadcast_round_result(S1, Phases, Cleared),
     %% Sonar reveals: privately show each shooter the cards of anyone their
     %% ping connected with this round.
     reveal_sonar_hits(S0, Phases),
+    %% Age existing ink clouds and add the ones deployed this round.
+    Ink1 = add_ink(tick_ink(S1#state.ink), NewInk),
     %% Advance to the next round: fresh hands, clear programs/locks/timer.
     S2 = S1#state{round = S1#state.round + 1,
-                  programs = #{}, locked = [], submitted = #{},
+                  programs = #{}, locked = [], submitted = #{}, ink = Ink1,
                   timer_ref = undefined, timer_ends = undefined},
     deal_and_announce(S2).
 
@@ -559,6 +719,14 @@ submarines_json(S) ->
     [sub_json(Idx, Id, S)
      || {Idx, Id} <- enumerate(S#state.join_order),
         maps:is_key(Id, S#state.subs)].
+
+%% 0-based position of a player in join order (its stable color index).
+index_of(Id, S) ->
+    index_at(Id, S#state.join_order, 0).
+
+index_at(Id, [Id | _], N) -> N;
+index_at(Id, [_ | T], N) -> index_at(Id, T, N + 1);
+index_at(_, [], _) -> 0.
 
 sub_json(Idx, Id, S) ->
     Sub = maps:get(Id, S#state.subs),

@@ -185,6 +185,13 @@ dispatch(<<"lock_registers">>, _P, Seq, State) ->
         end
     end);
 
+dispatch(<<"set_sonar_mode">>, P, Seq, State) ->
+    with_game(Seq, State, fun(GamePid, PlayerId) ->
+        Mode = maps:get(<<"mode">>, P, <<"passive">>),
+        stw_game:set_sonar_mode(GamePid, PlayerId, Mode),
+        {[], State}
+    end);
+
 dispatch(_Type, _P, Seq, State) ->
     reply(error_msg(Seq, <<"unknown_type">>,
                     <<"Unrecognized message type.">>), State).
