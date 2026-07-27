@@ -263,7 +263,7 @@
 <body>
   <header>
     <h1>Submarine Trench War</h1>
-    <div class="subtitle">Phase 7 &mdash; the black box hunt</div>
+    <div class="subtitle">Phase 8 &mdash; tactical cards &amp; depth</div>
   </header>
 
   <main>
@@ -401,6 +401,7 @@
       pendingRound: null,// next-round setup buffered until a replay ends
       visibleTiles: null,// Set of "x,y" I can currently see, or null (no fog)
       inkClouds: [],    // [{ x, y }] ink clouds blocking vision
+      decoys: [],       // [{ x, y }] false contacts on my scope
       spectator: false, // am I watching with a full-board view?
       sonarMode: "passive", // my sonar mode: passive | active
       dataNodes: [],    // [{ x, y }] data nodes I can currently see
@@ -424,6 +425,8 @@
       depth_charge:   { label: "D.Charge", glyph: "\u25c9" },
       sonar_ping:     { label: "Sonar",   glyph: "\u25cc" },
       ink_cloud:      { label: "Ink",     glyph: "\u2601" },
+      decoy_torpedo:  { label: "Decoy",   glyph: "\u21dd" },
+      emp_burst:      { label: "EMP",     glyph: "\u26a1" },
     };
     // Cards that actually move the sub (for the path preview).
     const MOVE_CARDS = { ahead_standard: 1, ahead_flank: 2, reverse: 1 };
@@ -766,6 +769,11 @@
           log("sys", nameOf(ev.player_id) + " hit a mine!");
         } else if (ev.type === "ram") {
           log("sys", nameOf(ev.player_id) + " rammed.");
+        } else if (ev.type === "disabled") {
+          log("sys", nameOf(ev.player_id) +
+            "'s nav-computer was scrambled by an EMP.");
+        } else if (ev.type === "decoy") {
+          log("sys", nameOf(ev.player_id) + " launched a decoy.");
         } else if (ev.type === "destroyed") {
           log("err", nameOf(ev.player_id) + " was destroyed!");
         }
@@ -789,6 +797,7 @@
       state.spectator = !!p.spectator;
       if (typeof p.sonar_mode === "string") state.sonarMode = p.sonar_mode;
       state.inkClouds = p.ink_clouds || [];
+      state.decoys = p.decoys || [];
       state.dataNodes = p.data_nodes || [];
       state.extraction = p.extraction || null;
       if (typeof p.win_data === "number") state.winData = p.win_data;
@@ -1060,6 +1069,7 @@
 
       drawFog(g, ox, oy, size, t);
       drawObjectives(g, ox, oy, size, t);
+      drawDecoys(g, ox, oy, size, t);
 
       const subs = state.anim ? animatedSubs(t) : state.subs;
       if (!state.anim) drawGhostPath(g, ox, oy, size);
@@ -1127,6 +1137,29 @@
         g.stroke();
         g.restore();
       }
+    }
+
+    // Draw decoy contacts: false sonar signatures planted by enemies. They
+    // mimic a submarine blip (a faint ringed dot) to bait the player into
+    // chasing or firing at a phantom.
+    function drawDecoys(g, ox, oy, size, t) {
+      const pulse = 0.5 + 0.5 * Math.sin(t / 280);
+      (state.decoys || []).forEach((c) => {
+        const cx = ox + c.x * size + size / 2, cy = oy + c.y * size + size / 2;
+        g.save();
+        g.globalAlpha = 0.3 + 0.35 * pulse;
+        g.fillStyle = "#e0607a";
+        g.beginPath();
+        g.arc(cx, cy, size * 0.24, 0, Math.PI * 2);
+        g.fill();
+        g.globalAlpha = 0.55;
+        g.strokeStyle = "#e0607a";
+        g.lineWidth = 1.5;
+        g.beginPath();
+        g.arc(cx, cy, size * 0.32, 0, Math.PI * 2);
+        g.stroke();
+        g.restore();
+      });
     }
 
     function drawFeature(g, ch, px, py, size, t) {
@@ -1299,6 +1332,31 @@
             g.lineTo(cx(s.x) + size * 0.15, cy(s.y) - size * 0.1);
             g.stroke();
           }
+        } else if (ev.type === "decoy") {
+          // A phantom torpedo streaks out and drops a false contact.
+          const s = posOf[ev.player_id];
+          g.globalAlpha = 0.4 + 0.5 * fade;
+          g.strokeStyle = "#e0607a";
+          g.lineWidth = 2;
+          g.setLineDash([3, 3]);
+          g.beginPath();
+          if (s) { g.moveTo(cx(s.x), cy(s.y)); g.lineTo(cx(ev.x), cy(ev.y)); }
+          g.stroke();
+          g.setLineDash([]);
+          g.beginPath();
+          g.arc(cx(ev.x), cy(ev.y), size * 0.3 * (1.2 - fade), 0, Math.PI * 2);
+          g.stroke();
+        } else if (ev.type === "emp_burst") {
+          // An expanding electric ring at the source, sparking the target.
+          g.globalAlpha = 0.3 + 0.5 * fade;
+          g.strokeStyle = "#8ad0ff";
+          g.lineWidth = 2;
+          g.beginPath();
+          g.arc(cx(ev.x), cy(ev.y), size * (0.3 + 0.55 * (1 - fade)),
+                0, Math.PI * 2);
+          g.stroke();
+          const tgt = posOf[ev.target];
+          if (tgt) explosion(g, cx(tgt.x), cy(tgt.y), size * 0.4, fade, "#8ad0ff");
         }
       }
       g.restore();
@@ -1648,6 +1706,8 @@
       ["depth_charge", "Arm a charge that detonates next register on your tile (3 damage), hitting any depth."],
       ["sonar_ping", "Ping straight ahead (1 damage). Hits any depth and reveals a struck enemy's cards."],
       ["ink_cloud", "Release ink on your tile. It blocks vision through that tile for 2 rounds \u2014 great cover."],
+      ["decoy_torpedo", "Fire a phantom torpedo. It leaves a false contact ahead that shows on enemy scopes next round."],
+      ["emp_burst", "Fry an adjacent enemy's nav-computer, scrambling one of their upcoming registers into a drift."],
     ];
     const ITEM_HELP = [
       ["#", "\u25a9", "#7fa8c0"],

@@ -53,6 +53,7 @@
     locked = [] :: [binary()],
     sonar = #{} :: #{binary() => active | passive},
     ink = #{} :: #{stw_board:coord() => pos_integer()},
+    decoys = [] :: [{binary(), stw_board:coord()}],
     nodes = [] :: [stw_board:coord()],
     extraction :: stw_board:coord() | undefined,
     epath = [] :: [stw_board:coord()],
@@ -164,7 +165,7 @@ handle_call({start_game, PlayerId}, _From, S) ->
             EPath = extraction_path(S#state.board),
             S1 = S#state{phase = playing, subs = place_subs(S),
                          round = 1, programs = #{}, locked = [],
-                         submitted = #{}, ink = #{},
+                         submitted = #{}, ink = #{}, decoys = [],
                          nodes = stw_board:data_nodes(S#state.board),
                          epath = EPath, eidx = 0, extraction = hd(EPath),
                          revealed = [], winner = undefined,
@@ -387,6 +388,7 @@ player_view(S, PlayerId) ->
     Base = #{<<"round">> => S#state.round,
              <<"sonar_mode">> => atom_to_binary(sonar_mode(S, PlayerId)),
              <<"ink_clouds">> => ink_json(S),
+             <<"decoys">> => decoys_for(S, PlayerId),
              <<"extraction">> => coord_json(S#state.extraction),
              <<"win_data">> => ?WIN_DATA},
     case is_spectator(S, PlayerId) of
@@ -439,20 +441,29 @@ round_result_view(S, PlayerId, Phases, Cleared, Ink, Actives) ->
     end.
 
 %% Trim a phase's submarine snapshot to the subs the viewer could see from
-%% their own position in that phase. Events (combat FX) are left intact.
+%% their own position in that phase. Combat FX events are left intact, but a
+%% decoy launch is hidden from everyone except its owner so the false contact
+%% it leaves next round is not given away during the replay.
 fog_phase(Board, Phase, PlayerId, Mode, Ink, Actives) ->
     Snap = maps:get(<<"submarines">>, Phase),
+    Phase1 = Phase#{<<"events">> => visible_events(Phase, PlayerId)},
     case lists:keyfind(PlayerId, 2, [{E, maps:get(<<"player_id">>, E)}
                                      || E <- Snap]) of
         false ->
-            Phase;
+            Phase1;
         _ ->
             Me = snap_entry(Snap, PlayerId),
             Visible = [E || E <- Snap,
                             snap_visible(Board, Me, Mode, Ink, Actives,
                                          PlayerId, E)],
-            Phase#{<<"submarines">> => Visible}
+            Phase1#{<<"submarines">> => Visible}
     end.
+
+%% Drop decoy launch events owned by other players; keep everything else.
+visible_events(Phase, PlayerId) ->
+    [E || E <- maps:get(<<"events">>, Phase, []),
+          maps:get(<<"type">>, E) =/= <<"decoy">>
+              orelse maps:get(<<"player_id">>, E) =:= PlayerId].
 
 snap_entry(Snap, PlayerId) ->
     hd([E || E <- Snap, maps:get(<<"player_id">>, E) =:= PlayerId]).
@@ -533,6 +544,11 @@ parse_mode(_) -> passive.
 ink_tiles(S) -> maps:keys(S#state.ink).
 
 ink_json(S) -> [coord_json(C) || C <- ink_tiles(S)].
+
+%% Decoy signatures shown on a player's scope. A player never sees their own
+%% decoy (they know it is a bluff); everyone else gets the false contact.
+decoys_for(S, PlayerId) ->
+    [coord_json(C) || {Owner, C} <- S#state.decoys, Owner =/= PlayerId].
 
 %% Age clouds by one round, dropping any that have expired.
 tick_ink(Ink) ->
@@ -677,6 +693,7 @@ resolve_round(S, AutoFilled) ->
         stw_engine:resolve_round(S0#state.board, S0#state.subs, S0#state.programs),
     Cleared = maps:get(mines_cleared, Effects, []),
     NewInk = maps:get(ink_clouds, Effects, []),
+    Decoys = maps:get(decoys, Effects, []),
     Board1 = lists:foldl(fun(C, B) -> stw_board:clear_mine(B, C) end,
                          S0#state.board, Cleared),
     %% Objective: download data nodes we ended the round on, then resolve data
@@ -702,7 +719,7 @@ resolve_round(S, AutoFilled) ->
             {Extraction1, Eidx1} = advance_extraction(S1),
             S2 = S1#state{round = S1#state.round + 1,
                           programs = #{}, locked = [], submitted = #{},
-                          ink = Ink1, revealed = Leaders,
+                          ink = Ink1, revealed = Leaders, decoys = Decoys,
                           extraction = Extraction1, eidx = Eidx1,
                           timer_ref = undefined, timer_ends = undefined},
             announce_leaders(S2, Leaders),

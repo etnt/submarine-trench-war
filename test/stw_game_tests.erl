@@ -244,7 +244,9 @@ objectives_in_game_state() ->
     ?assert(is_integer(maps:get(<<"x">>, Ext))),
     ?assert(is_integer(maps:get(<<"y">>, Ext))),
     ?assertEqual(3, maps:get(<<"win_data">>, GS)),
-    ?assert(is_list(maps:get(<<"data_nodes">>, GS))).
+    ?assert(is_list(maps:get(<<"data_nodes">>, GS))),
+    %% Phase 8: the fog view also carries a (starts-empty) decoy contact list.
+    ?assertEqual([], maps:get(<<"decoys">>, GS)).
 
 %% --- pure objective-logic tests ---------------------------------------
 

@@ -264,3 +264,57 @@ destruction_marks_wreck_test() ->
     ?assertEqual(false, alive_of(Final, <<"b">>)),
     ?assertEqual(1, length(events_of(Phases, <<"destroyed">>))).
 
+%% --- depth interactions ----------------------------------------------
+
+%% Depth charges are the one weapon that crosses layers: a charge armed by a
+%% shallow sub still damages a deep sub sharing its tile when it detonates.
+depth_charge_hits_across_depth_test() ->
+    B = open_board(8, 6),
+    Subs = #{<<"a">> => sub(2, 2, <<"E">>),
+             <<"b">> => subd(2, 2, <<"W">>, <<"deep">>)},
+    P = #{<<"a">> => [<<"depth_charge">>]},
+    {Final, Phases, _} = stw_engine:resolve_round(B, Subs, P),
+    ?assertEqual(7, hull_of(Final, <<"b">>)),   % 10 - 3, depth ignored
+    ?assertEqual(1, length(events_of(Phases, <<"explosion">>))).
+
+%% --- tactical: EMP burst ---------------------------------------------
+
+emp_disables_adjacent_register_test() ->
+    B = open_board(8, 6),
+    %% a fires EMP at register 0; b is adjacent and would flank east on
+    %% register 1. The EMP scrambles that register to drift, so b stays put.
+    Subs = #{<<"a">> => sub(2, 2, <<"E">>), <<"b">> => sub(3, 2, <<"E">>)},
+    P = #{<<"a">> => [<<"emp_burst">>],
+          <<"b">> => [<<"surface">>, <<"ahead_standard">>, <<"surface">>,
+                      <<"surface">>, <<"surface">>]},
+    {Final, Phases, _} = stw_engine:resolve_round(B, Subs, P),
+    ?assertEqual({3, 2}, final_pos(Final, <<"b">>)),
+    ?assertEqual(1, length(events_of(Phases, <<"emp_burst">>))),
+    ?assertEqual(1, length(events_of(Phases, <<"disabled">>))).
+
+emp_no_target_is_noop_test() ->
+    B = open_board(8, 6),
+    %% b is out of range: the EMP finds no target and b's register 1 still
+    %% advances it east one tile.
+    Subs = #{<<"a">> => sub(2, 2, <<"E">>), <<"b">> => sub(5, 2, <<"E">>)},
+    P = #{<<"a">> => [<<"emp_burst">>],
+          <<"b">> => [<<"surface">>, <<"ahead_standard">>, <<"surface">>,
+                      <<"surface">>, <<"surface">>]},
+    {Final, Phases, _} = stw_engine:resolve_round(B, Subs, P),
+    ?assertEqual({6, 2}, final_pos(Final, <<"b">>)),
+    ?assertEqual([], events_of(Phases, <<"emp_burst">>)),
+    ?assertEqual([], events_of(Phases, <<"disabled">>)).
+
+%% --- tactical: decoy torpedo -----------------------------------------
+
+decoy_projects_false_contact_test() ->
+    B = open_board(10, 6),
+    Subs = #{<<"a">> => sub(2, 2, <<"E">>)},
+    P = #{<<"a">> => one(<<"decoy_torpedo">>)},
+    {_, Phases, Effects} = stw_engine:resolve_round(B, Subs, P),
+    Decoys = maps:get(decoys, Effects),
+    ?assertMatch([{<<"a">>, {_, 2}}], Decoys),
+    [{<<"a">>, {DX, _}}] = Decoys,
+    ?assert(DX > 2),
+    ?assertEqual(1, length(events_of(Phases, <<"decoy">>))).
+

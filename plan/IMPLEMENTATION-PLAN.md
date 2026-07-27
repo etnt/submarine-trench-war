@@ -169,11 +169,11 @@ Goal: the win condition and its endgame tension.
 
 Goal: round out the deck and layer-based tactics.
 
-* [ ] Decoy Torpedo: false sonar signature on a target's view for one turn.
-* [ ] EMP Burst: disable one random register of an adjacent enemy (→ drift).
-* [ ] Balance tactical card frequency in the deck.
-* [ ] Verify all depth-layer combat interactions from the design doc.
-* [ ] Client: UI/feedback for tactical card effects.
+* [x] Decoy Torpedo: false sonar signature on a target's view for one turn.
+* [x] EMP Burst: disable one random register of an adjacent enemy (→ drift).
+* [x] Balance tactical card frequency in the deck.
+* [x] Verify all depth-layer combat interactions from the design doc.
+* [x] Client: UI/feedback for tactical card effects.
 
 **Milestone:** Full card set available and interacting correctly.
 

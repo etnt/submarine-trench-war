@@ -343,6 +343,19 @@ Players pick 5 of these IDs to `program_registers`.
 > an `ink_cloud` event (`{ "type": "ink_cloud", "player_id": ..., "x", "y" }`)
 > and the tile blocks vision through it for the next two rounds. Active clouds
 > are reported to clients in every `game_state` via `ink_clouds`.
+>
+> **Phase 8 note:** two more tactical cards round out the deck:
+>
+> * `decoy_torpedo` — projects a false sonar signature on the open tile a few
+>   squares straight ahead of the sub. A `round_result` phase emits a `decoy`
+>   event (`{ "type": "decoy", "player_id": ..., "x", "y" }`) that is **only**
+>   sent to the decoy's owner (and spectators); the resulting phantom contact
+>   is shown to every *other* player via `game_state.decoys` for one round.
+> * `emp_burst` — scrambles one upcoming register of an orthogonally adjacent
+>   enemy (lowest-id if several) into an inert `drift`. A phase emits an
+>   `emp_burst` event on the source (`x`, `y`, `target`) and a `disabled`
+>   event on the victim (`by`, `register`). Deterministic: the disabled
+>   register is the one immediately after the burst.
 
 Navigation card `kind` values:
 `ahead_standard`, `ahead_flank`, `reverse`, `port_bank`, `starboard_bank`,
@@ -411,6 +424,10 @@ list applied in sequence.
 > | `vent` | sub | (forced Deep → Shallow) |
 > | `ram` | sub | (same-tile collision damage) |
 > | `destroyed` | sub | (hull reached 0; becomes a wreck) |
+> | `ink_cloud` | sub | `x`, `y` (deploys vision-blocking ink for 2 rounds) |
+> | `decoy` | owner | `x`, `y` (phantom contact; owner-only in the replay) |
+> | `emp_burst` | source | `x`, `y`, `target: <id>` |
+> | `disabled` | victim | `by: <id>`, `register` (register scrambled to drift) |
 >
 > Each phase snapshot entry now also carries `hull` and `alive`. Depth charges
 > armed on the final register detonate at round end and their events are folded
@@ -512,6 +529,11 @@ currently see (fog of war).
 > * `win_data` — data nodes a submarine must carry to be able to extract.
 > * `broadcasts` — also includes any extraction-ready leader that was revealed
 >   to all for one turn (see `extraction_announced`).
+>
+> **Phase 8 note:** `game_state` also carries `decoys` — a list of
+> `{ "x", "y" }` false contacts planted by *other* players' decoy torpedoes,
+> shown on the receiver's scope for one round. A player never sees their own
+> decoy. Spectators see every decoy.
 
 ```json
 {

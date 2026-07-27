@@ -14,6 +14,8 @@
 %%   1. detonate depth charges armed on the previous register (1-phase delay)
 %%   2. rotations and depth changes
 %%   3. weapons: torpedoes and sonar pings (hit-scan), arm depth charges
+%%   3b. deployables: ink clouds and decoy signatures
+%%   3c. EMP bursts: scramble a future register of an adjacent enemy
 %%   4. movement (walls, edges, other subs, ramming collisions)
 %%   5. currents (turbulence rotation + drift)
 %%   6. mines (enter a mine tile: damage, scramble a later register, consume)
@@ -57,7 +59,8 @@ nav_cards() ->
 %% @doc Tactical cards: the combat half of the deck.
 -spec tactical_cards() -> [binary()].
 tactical_cards() ->
-    [<<"torpedo">>, <<"depth_charge">>, <<"sonar_ping">>, <<"ink_cloud">>].
+    [<<"torpedo">>, <<"depth_charge">>, <<"sonar_ping">>, <<"ink_cloud">>,
+     <<"decoy_torpedo">>, <<"emp_burst">>].
 
 %% @doc Every card kind the engine understands.
 -spec card_kinds() -> [binary()].
@@ -79,7 +82,8 @@ resolve_round(Board, Subs0, Programs0) ->
             programs => Programs0,
             armed => [],
             cleared => [],
-            ink => []},
+            ink => [],
+            decoy => []},
     {StN, Rev} =
         lists:foldl(
           fun(R, {St, Acc}) ->
@@ -93,7 +97,8 @@ resolve_round(Board, Subs0, Programs0) ->
           lists:seq(0, ?REGISTERS - 1)),
     {StF, Phases} = final_detonate(Board, StN, lists:reverse(Rev)),
     Effects = #{mines_cleared => lists:usort(maps:get(cleared, StF)),
-                ink_clouds => lists:usort(maps:get(ink, StF))},
+                ink_clouds => lists:usort(maps:get(ink, StF)),
+                decoys => lists:usort(maps:get(decoy, StF))},
     {maps:get(subs, StF), Phases, Effects}.
 
 %% --- one register -----------------------------------------------------
@@ -104,14 +109,17 @@ apply_register(Board, St, R) ->
     ArmedPrev = maps:get(armed, St),
     Cleared0 = maps:get(cleared, St),
     Ink0 = maps:get(ink, St),
+    Decoy0 = maps:get(decoy, St),
     %% 1. depth charges armed last register go off now (1-phase delay)
     {Subs1, E1} = detonate(Subs0, ArmedPrev),
     %% 2. rotations + depth changes
     {Subs2, E2} = apply_turns(Subs1, Programs, R),
     %% 3. weapons + arming
     {Subs3, E3, ArmedNow} = apply_fires(Board, Subs2, Programs, R),
-    %% 3b. deployables (ink clouds) drop on the sub's current tile
-    {Ed, Ink1} = apply_deploys(Subs3, Programs, R, Ink0),
+    %% 3b. deployables: ink clouds and decoy sonar signatures
+    {Ed, Ink1, Decoy1} = apply_deploys(Board, Subs3, Programs, R, Ink0, Decoy0),
+    %% 3c. EMP bursts scramble a future register of an adjacent enemy
+    {Ee, ProgramsE} = apply_emp(Subs3, Programs, R),
     %% 4. movement (with ramming)
     Movers = build_movers(Subs3, Programs, R),
     {Subs4, E4} = step_movers(Board, Subs3, Movers, true),
@@ -119,14 +127,15 @@ apply_register(Board, St, R) ->
     {Subs5, E5} = apply_currents(Board, Subs4),
     %% 6. mines
     {Subs6, E6, Programs1, Cleared1} =
-        apply_mines(Board, Subs5, Programs, R, Cleared0),
+        apply_mines(Board, Subs5, ProgramsE, R, Cleared0),
     %% 7. thermal vents
     {Subs7, E7} = apply_vents(Board, Subs6),
     %% 8. destruction
     {Subs8, E8} = reap(Subs7),
     St1 = St#{subs => Subs8, programs => Programs1,
-              armed => ArmedNow, cleared => Cleared1, ink => Ink1},
-    {St1, E1 ++ E2 ++ E3 ++ Ed ++ E4 ++ E5 ++ E6 ++ E7 ++ E8}.
+              armed => ArmedNow, cleared => Cleared1,
+              ink => Ink1, decoy => Decoy1},
+    {St1, E1 ++ E2 ++ E3 ++ Ed ++ Ee ++ E4 ++ E5 ++ E6 ++ E7 ++ E8}.
 
 apply_turns(Subs, Programs, R) ->
     lists:foldl(
@@ -187,24 +196,104 @@ apply_fires(Board, Subs, Programs, R) ->
       {Subs, [], []},
       alive_ids(Subs)).
 
-%% Deploy tactical clouds. An ink cloud drops on the sub's current tile and
-%% is recorded as an effect (the game server tracks its lifetime); it does
-%% not alter movement, so subs are returned unchanged.
-apply_deploys(Subs, Programs, R, Ink0) ->
+%% Deploy tactical clouds and decoys. An ink cloud drops on the sub's current
+%% tile; a decoy torpedo projects a false sonar signature a few tiles ahead.
+%% Neither alters movement, so the submarines are returned unchanged; the
+%% game server tracks the resulting effects. Decoys are tagged with their
+%% owner so the false contact can be hidden from the owner's own view.
+apply_deploys(Board, Subs, Programs, R, Ink0, Decoy0) ->
     lists:foldl(
-      fun(Id, {Evs, Ink}) ->
+      fun(Id, {Evs, Ink, Decoy}) ->
           case action(card_at(Programs, Id, R)) of
               {deploy, ink} ->
                   {X, Y} = pos(Subs, Id),
                   {Evs ++ [event(<<"ink_cloud">>, Id,
                                  #{<<"x">> => X, <<"y">> => Y})],
-                   [{X, Y} | Ink]};
+                   [{X, Y} | Ink], Decoy};
+              {deploy, decoy} ->
+                  {DX, DY} = decoy_tile(Board, Subs, Id),
+                  {Evs ++ [event(<<"decoy">>, Id,
+                                 #{<<"x">> => DX, <<"y">> => DY})],
+                   Ink, [{Id, {DX, DY}} | Decoy]};
               _ ->
-                  {Evs, Ink}
+                  {Evs, Ink, Decoy}
           end
       end,
-      {[], Ink0},
+      {[], Ink0, Decoy0},
       alive_ids(Subs)).
+
+%% A decoy signature lands on the furthest open tile (up to a short range)
+%% straight ahead of the sub, mimicking a contact fleeing along the trench.
+-define(DECOY_RANGE, 3).
+
+decoy_tile(Board, Subs, Id) ->
+    Sub = maps:get(Id, Subs),
+    Dir = dir_vec(maps:get(facing, Sub)),
+    Start = pos(Subs, Id),
+    decoy_walk(Board, add(Start, Dir), Dir, Start, ?DECOY_RANGE).
+
+decoy_walk(_Board, _Coord, _Dir, Last, 0) ->
+    Last;
+decoy_walk(Board, Coord, Dir, Last, N) ->
+    case passable(Board, Coord) of
+        true -> decoy_walk(Board, add(Coord, Dir), Dir, Coord, N - 1);
+        false -> Last
+    end.
+
+%% EMP bursts: each sub playing one fries the nav-computer of an adjacent
+%% enemy, scrambling that enemy's next unresolved register into inert drift.
+%% Returns the (possibly modified) programs plus events. Deterministic: the
+%% target is the lowest-id adjacent enemy and the disabled register is the
+%% one immediately after the burst.
+apply_emp(Subs, Programs, R) ->
+    lists:foldl(
+      fun(Id, {Evs, Progs}) ->
+          case action(card_at(Progs, Id, R)) of
+              {emp} ->
+                  {X, Y} = pos(Subs, Id),
+                  case emp_target(Subs, Id, {X, Y}) of
+                      none ->
+                          {Evs, Progs};
+                      Tgt ->
+                          {Progs1, Reg} = disable_register(Progs, Tgt, R),
+                          Burst = event(<<"emp_burst">>, Id,
+                                        #{<<"x">> => X, <<"y">> => Y,
+                                          <<"target">> => Tgt}),
+                          Disabled = case Reg of
+                                         null -> [];
+                                         _ -> [event(<<"disabled">>, Tgt,
+                                                    #{<<"by">> => Id,
+                                                      <<"register">> => Reg})]
+                                     end,
+                          {Evs ++ [Burst] ++ Disabled, Progs1}
+                  end;
+              _ ->
+                  {Evs, Progs}
+          end
+      end,
+      {[], Programs},
+      alive_ids(Subs)).
+
+%% The lowest-id alive enemy orthogonally adjacent to Coord, or `none`.
+emp_target(Subs, Self, {X, Y}) ->
+    Adjacent = [{X + 1, Y}, {X - 1, Y}, {X, Y + 1}, {X, Y - 1}],
+    case [Id || Id <- alive_ids(Subs),
+                Id =/= Self,
+                lists:member(pos(Subs, Id), Adjacent)] of
+        [Tgt | _] -> Tgt;
+        [] -> none
+    end.
+
+%% Replace the target's register after R with inert drift, if it exists.
+%% Returns `{Programs, DisabledRegisterIndex | null}`.
+disable_register(Programs, Tgt, R) ->
+    case maps:find(Tgt, Programs) of
+        {ok, Cards} when length(Cards) > R + 1 ->
+            {maps:put(Tgt, replace_nth(R + 2, <<"drift">>, Cards), Programs),
+             R + 1};
+        _ ->
+            {Programs, null}
+    end.
 
 %% A straight beam (torpedo or sonar) from the sub along its facing. Depth
 %% gates whether a same-tile enemy can be hit. Returns updated subs + events
@@ -517,6 +606,8 @@ action(<<"torpedo">>) -> {fire, torpedo};
 action(<<"sonar_ping">>) -> {fire, sonar};
 action(<<"depth_charge">>) -> {arm, depth_charge};
 action(<<"ink_cloud">>) -> {deploy, ink};
+action(<<"decoy_torpedo">>) -> {deploy, decoy};
+action(<<"emp_burst">>) -> {emp};
 action(_) -> hold.
 
 depth_event(<<"deep">>) -> <<"dive">>;
