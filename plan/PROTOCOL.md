@@ -753,6 +753,13 @@ Error `code` values: `protocol_version_unsupported`, `room_not_found`,
 `invalid_register`, `already_locked`, `not_your_turn_phase`, `rate_limited`,
 `internal_error`, `bad_json`, `missing_type`.
 
+> **Phase 10 note:** no protocol changes. The client now maps these `code`
+> values to friendly, player-facing messages (e.g. `room_full` → "That room
+> is full."). Fleet `color` values are still delivered via the existing
+> `color` field on submarines/standings, but the server now assigns an
+> Okabe-Ito colorblind-safe palette (`#4eb3f5`, `#e69f00`, `#12b886`,
+> `#cc79a7`) instead of the earlier `#3cf`/`#f83`/`#6c6`/`#c6f`.
+
 ---
 
 ## Reconnection

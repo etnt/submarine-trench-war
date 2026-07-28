@@ -258,12 +258,55 @@
     .card-btn .glyph { font-size: 1rem; }
     .card-btn.used { opacity: 0.32; }
     #program.locked .palette, #program.locked .slots { pointer-events: none; opacity: 0.6; }
+
+    /* --- Phase 10 polish: HUD, sound, status panel --- */
+    .sound-btn {
+      font-size: 0.78rem; margin-left: 8px; padding: 3px 10px;
+      border: 1px solid var(--accent-dim); border-radius: 12px;
+      background: #02090f; color: var(--muted); cursor: pointer;
+      vertical-align: middle;
+    }
+    .sound-btn.on { color: var(--accent); border-color: var(--accent); }
+    .phase-pill {
+      display: inline-block; margin-left: 8px; padding: 2px 10px;
+      font-size: 0.72rem; letter-spacing: 0.04em; border-radius: 12px;
+      background: #02121b; border: 1px solid var(--accent-dim);
+      color: var(--muted); vertical-align: middle;
+      transition: color 0.2s, border-color 0.2s, box-shadow 0.2s;
+    }
+    .phase-pill.resolving {
+      color: #ffd24a; border-color: #ffd24a;
+      box-shadow: 0 0 10px rgba(255,210,74,0.35);
+    }
+    .phase-pill.programming { color: var(--accent); border-color: var(--accent); }
+    .phase-pill.waiting { color: var(--muted); }
+    /* richer fleet status rows */
+    ul.players li.pdead { opacity: 0.55; }
+    ul.players li.pme { box-shadow: inset 0 0 0 1px rgba(255,255,255,0.18); }
+    .swatch.tag {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 16px; height: 16px; border-radius: 4px;
+      font-size: 0.62rem; font-weight: 700; color: #02090f;
+    }
+    .pstat { display: flex; gap: 6px; align-items: center; }
+    .pill {
+      font-size: 0.66rem; padding: 1px 6px; border-radius: 8px;
+      background: #02121b; border: 1px solid var(--accent-dim);
+      color: var(--muted); font-variant-numeric: tabular-nums;
+    }
+    .pill.data { color: var(--accent); border-color: var(--accent-dim); }
+    .pill.deep { color: #9db8ff; }
+    .hullbar {
+      width: 46px; height: 6px; border-radius: 3px;
+      background: rgba(0,0,0,0.5); overflow: hidden; flex: 0 0 auto;
+    }
+    .hullbar > span { display: block; height: 100%; }
   </style>
 </head>
 <body>
   <header>
     <h1>Submarine Trench War</h1>
-    <div class="subtitle">Phase 9 &mdash; dynamic map events</div>
+    <div class="subtitle">Phase 10 &mdash; polish, audio &amp; UX</div>
   </header>
 
   <main>
@@ -343,7 +386,9 @@
     <!-- GAME: board + fleet -->
     <div class="panel hidden" id="viewGame">
       <h2>Match In Progress <span id="roundTag" class="badge">Round 1</span>
+        <span id="phasePill" class="phase-pill">Standby</span>
         <button id="btnSonar" class="sonar-btn" title="Toggle active/passive sonar">Sonar: Passive</button>
+        <button id="btnSound" class="sound-btn" title="Toggle sound effects" aria-pressed="false">🔈 Sound</button>
       </h2>
       <canvas id="board" width="600" height="360"></canvas>
       <div id="mapTip" class="map-tip hidden"></div>
@@ -384,6 +429,7 @@
 
     const LS_TOKEN = "stw_session_token";
     const LS_NAME = "stw_display_name";
+    const LS_SOUND = "stw_sound_on";
 
     const state = {
       ws: null,
@@ -418,6 +464,8 @@
       myData: 0,        // data my sub is carrying
       gameOver: false,  // has the match ended?
       roster: {},       // player_id -> { color, display_name } (from game_started)
+      // SFX on by default; only stays off if the player explicitly muted before.
+      soundOn: localStorage.getItem(LS_SOUND) !== "0",
     };
 
     // Card metadata: label + glyph for the UI.
@@ -457,6 +505,7 @@
       btnClear: $("btnClear"), btnLock: $("btnLock"),
       progToast: $("progToast"), program: $("program"),
       pingTimer: $("pingTimer"), btnSonar: $("btnSonar"),
+      btnSound: $("btnSound"), phasePill: $("phasePill"),
       btnHelp: $("btnHelp"), btnHelpClose: $("btnHelpClose"),
       helpModal: $("helpModal"), helpBody: $("helpBody"),
       gameOverModal: $("gameOverModal"), gameOverBody: $("gameOverBody"),
@@ -470,6 +519,89 @@
     // long freezes (backgrounded / occluded window) so a replay resumes rather
     // than skipping ahead.
     let lastFrameT = null;
+
+    // --- audio ----------------------------------------------------------
+    // Lightweight synthesized SFX via the Web Audio API (no asset files).
+    // The AudioContext is created lazily and resumed on the first user
+    // gesture to satisfy browser autoplay policies. All output is gated by
+    // state.soundOn so a muted player pays no cost beyond a cheap early return.
+    const Sfx = (() => {
+      let ac = null, master = null;
+      function ensure() {
+        if (ac) return ac;
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        ac = new AC();
+        master = ac.createGain();
+        master.gain.value = 0.5;
+        master.connect(ac.destination);
+        return ac;
+      }
+      // Resume a suspended context (called from user-gesture handlers).
+      function unlock() {
+        const c = ensure();
+        if (c && c.state === "suspended") c.resume();
+      }
+      function noiseBuffer(dur) {
+        const n = Math.floor(ac.sampleRate * dur);
+        const buf = ac.createBuffer(1, n, ac.sampleRate);
+        const d = buf.getChannelData(0);
+        for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+        return buf;
+      }
+      // A pitched blip: oscillator gliding f0->f1 with an AR envelope.
+      function tone(type, f0, f1, dur, peak, delay) {
+        if (!state.soundOn) return;
+        const c = ensure(); if (!c) return;
+        const t0 = c.currentTime + (delay || 0);
+        const o = c.createOscillator();
+        const g = c.createGain();
+        o.type = type;
+        o.frequency.setValueAtTime(f0, t0);
+        o.frequency.exponentialRampToValueAtTime(Math.max(1, f1), t0 + dur);
+        g.gain.setValueAtTime(0.0001, t0);
+        g.gain.exponentialRampToValueAtTime(peak, t0 + Math.min(0.03, dur * 0.3));
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+        o.connect(g); g.connect(master);
+        o.start(t0); o.stop(t0 + dur + 0.02);
+      }
+      // A filtered noise burst for explosions / creaks / rumble.
+      function noise(dur, peak, cutoff, delay) {
+        if (!state.soundOn) return;
+        const c = ensure(); if (!c) return;
+        const t0 = c.currentTime + (delay || 0);
+        const src = c.createBufferSource();
+        src.buffer = noiseBuffer(dur);
+        const f = c.createBiquadFilter();
+        f.type = "lowpass"; f.frequency.value = cutoff || 900;
+        const g = c.createGain();
+        g.gain.setValueAtTime(peak, t0);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+        src.connect(f); f.connect(g); g.connect(master);
+        src.start(t0); src.stop(t0 + dur + 0.02);
+      }
+      return {
+        unlock,
+        sonar()      { tone("sine", 1400, 1800, 0.28, 0.18);
+                       tone("sine", 2100, 2400, 0.22, 0.10, 0.05); },
+        torpedo()    { noise(0.5, 0.22, 1200); tone("sawtooth", 420, 90, 0.5, 0.14); },
+        explosion()  { noise(0.55, 0.5, 700); tone("sine", 150, 40, 0.5, 0.22); },
+        hit()        { noise(0.4, 0.32, 500); tone("triangle", 240, 70, 0.4, 0.18); },
+        creak()      { tone("sawtooth", 90, 60, 0.7, 0.10);
+                       noise(0.7, 0.06, 300); },
+        mine()       { noise(0.6, 0.55, 800); tone("square", 200, 50, 0.5, 0.2); },
+        emp()        { tone("square", 1200, 200, 0.35, 0.16);
+                       tone("square", 900, 150, 0.35, 0.10, 0.04); },
+        collapse()   { noise(1.0, 0.6, 420); tone("sine", 110, 30, 1.0, 0.24); },
+        alarm()      { tone("square", 880, 880, 0.16, 0.14);
+                       tone("square", 660, 660, 0.16, 0.14, 0.2); },
+        lock()       { tone("sine", 660, 990, 0.14, 0.14); },
+        win()        { [523, 659, 784, 1047].forEach((f, i) =>
+                         tone("triangle", f, f, 0.24, 0.16, i * 0.13)); },
+        lose()       { [392, 330, 262].forEach((f, i) =>
+                         tone("sawtooth", f, f * 0.98, 0.34, 0.14, i * 0.18)); },
+      };
+    })();
 
     // --- logging --------------------------------------------------------
     function log(kind, text) {
@@ -835,6 +967,7 @@
       const s = (state.subs || []).find((x) => x.player_id === p.player_id);
       const nm = s ? (s.display_name || p.player_id) :
         (state.roster[p.player_id] || {}).display_name || p.player_id;
+      Sfx.alarm();
       log("warn", "\u26a0 " + nm + " is extraction-ready (" +
         p.data_collected + " data) \u2014 position revealed!");
     }
@@ -849,6 +982,7 @@
         state.collapses.push({ x: c.x, y: c.y, t0: null });
       });
       if (tiles.length) {
+        Sfx.collapse();
         log("warn", "\u26a0 Trench collapse! " + tiles.length +
           " section(s) caved in.");
       }
@@ -872,6 +1006,9 @@
       else if (winId === you) title = "Victory!";
       else title = "Defeat";
       el.gameOverTitle.textContent = title;
+      if (p.reason === "draw" || !winId) Sfx.lose();
+      else if (winId === you) Sfx.win();
+      else Sfx.lose();
 
       const reasonText = {
         extracted: "extracted the black-box data",
@@ -910,8 +1047,27 @@
         return;
       }
       const target = state.view === "home" ? el.homeToast : el.lobbyToast;
-      target.textContent = p.message || p.code;
+      target.textContent = friendlyError(p.code, p.message);
       setTimeout(() => { target.textContent = ""; }, 4000);
+    }
+
+    // Turn a terse server error code into player-facing guidance.
+    function friendlyError(code, message) {
+      const map = {
+        room_not_found: "No room with that code \u2014 check the letters and try again.",
+        room_full: "That room is full. Ask the host to make space or start a new one.",
+        not_host: "Only the host can start the match.",
+        no_identity: "Session hiccup \u2014 reconnecting\u2026",
+        invalid_register: "That set of cards isn't valid \u2014 pick from your current hand.",
+        already_locked: "Your registers are already locked for this round.",
+        not_your_turn_phase: "You can't do that right now \u2014 wait for the next phase.",
+        rate_limited: "Slow down a moment \u2014 too many actions at once.",
+        protocol_version_unsupported:
+          "This client is out of date. Refresh the page to update.",
+        bad_json: "The server didn't understand that request.",
+        internal_error: "The server hit a snag. Please try again.",
+      };
+      return map[code] || message || code;
     }
 
     function clearToast() {
@@ -952,22 +1108,82 @@
 
     function renderGamePlayers(p) {
       el.gamePlayers.innerHTML = "";
-      (p.players || []).forEach((pl) => {
+      (p.players || []).forEach((pl, i) => {
         const li = document.createElement("li");
-        if (pl.color) {
-          const sw = document.createElement("span");
-          sw.className = "swatch";
-          sw.style.background = pl.color;
-          li.appendChild(sw);
-        }
+        const dead = pl.alive === false;
+        const me = pl.player_id === state.playerId;
+        if (dead) li.classList.add("pdead");
+        if (me) li.classList.add("pme");
+
+        // colour swatch doubles as a shape/letter tag (a second, non-colour
+        // channel) so colourblind players can still tell fleets apart.
+        const sw = document.createElement("span");
+        sw.className = "swatch tag";
+        if (pl.color) sw.style.background = pl.color;
+        sw.textContent = (pl.display_name || pl.player_id || "?")
+          .trim().charAt(0).toUpperCase() || String(i + 1);
+        li.appendChild(sw);
+
         const name = document.createElement("span");
         name.className = "pname";
-        name.textContent = pl.display_name || pl.player_id;
+        name.textContent = (pl.display_name || pl.player_id) + (me ? " (you)" : "");
         li.appendChild(name);
-        if (typeof pl.depth === "string") li.appendChild(badge("", pl.depth));
-        if (typeof pl.hull === "number") li.appendChild(badge("", "hull " + pl.hull));
+
+        const stat = document.createElement("span");
+        stat.className = "pstat";
+        if (dead) {
+          stat.appendChild(pill("", "destroyed"));
+        } else {
+          if (typeof pl.data_collected === "number") {
+            stat.appendChild(pill("data", "\u25c8 " + pl.data_collected));
+          }
+          if (pl.depth === "deep") stat.appendChild(pill("deep", "\u2b07 deep"));
+          if (typeof pl.hull === "number") stat.appendChild(hullBar(pl.hull));
+        }
+        li.appendChild(stat);
         el.gamePlayers.appendChild(li);
       });
+    }
+
+    // A small labelled status pill.
+    function pill(cls, text) {
+      const s = document.createElement("span");
+      s.className = "pill" + (cls ? " " + cls : "");
+      s.textContent = text;
+      return s;
+    }
+
+    // A compact hull bar coloured by remaining integrity.
+    function hullBar(hull) {
+      const frac = Math.max(0, Math.min(1, hull / 10));
+      const wrap = document.createElement("span");
+      wrap.className = "hullbar";
+      wrap.title = "Hull " + hull + "/10";
+      const fill = document.createElement("span");
+      fill.style.width = Math.round(frac * 100) + "%";
+      fill.style.background =
+        frac > 0.5 ? "#12b886" : frac > 0.25 ? "#e0a020" : "#e05555";
+      wrap.appendChild(fill);
+      return wrap;
+    }
+
+    // Reflect the current stage of play in the header phase pill.
+    function updatePhasePill() {
+      const pillEl = el.phasePill;
+      if (!pillEl) return;
+      let text, cls;
+      if (state.gameOver) { text = "Match over"; cls = "waiting"; }
+      else if (state.anim) {
+        const total = state.anim.frames.length - 1;
+        const seg = Math.min((state.anim.seg || 0) + 1, total);
+        text = "Resolving \u00b7 Reg " + seg + "/" + total;
+        cls = "resolving";
+      } else if (state.spectator) { text = "Spectating"; cls = "waiting"; }
+      else if (state.locked) { text = "Locked \u2014 waiting"; cls = "waiting"; }
+      else if (state.round > 0) { text = "Programming"; cls = "programming"; }
+      else { text = "Standby"; cls = "waiting"; }
+      pillEl.textContent = text;
+      pillEl.className = "phase-pill " + cls;
     }
 
     // --- register programming -------------------------------------------
@@ -1042,6 +1258,7 @@
       if (state.locked) return;
       send("program_registers", { registers: state.program.slice() });
       send("lock_registers", {});
+      Sfx.lock();
       state.locked = true;
       el.program.classList.add("locked");
       el.progToast.textContent = "Locked. Waiting for the fleet\u2026";
@@ -1063,6 +1280,20 @@
       el.btnSonar.textContent = "Sonar: " + (active ? "Active" : "Passive");
       el.btnSonar.classList.toggle("active", active);
       el.btnSonar.classList.toggle("hidden", state.spectator);
+    }
+
+    function toggleSound() {
+      state.soundOn = !state.soundOn;
+      localStorage.setItem(LS_SOUND, state.soundOn ? "1" : "0");
+      updateSoundButton();
+      if (state.soundOn) { Sfx.unlock(); Sfx.lock(); }
+    }
+
+    function updateSoundButton() {
+      const on = state.soundOn;
+      el.btnSound.textContent = (on ? "\ud83d\udd0a" : "\ud83d\udd08") + " Sound";
+      el.btnSound.classList.toggle("on", on);
+      el.btnSound.setAttribute("aria-pressed", on ? "true" : "false");
     }
 
     // --- board rendering -----------------------------------------------
@@ -1100,6 +1331,7 @@
         }
       }
 
+      drawAmbient(g, ox, oy, size, t);
       drawFog(g, ox, oy, size, t);
       drawObjectives(g, ox, oy, size, t);
       drawDecoys(g, ox, oy, size, t);
@@ -1109,6 +1341,68 @@
       if (!state.anim) drawGhostPath(g, ox, oy, size);
       subs.forEach((s) => drawSub(g, s, ox, oy, size, t));
       if (state.anim) drawPhaseFX(g, ox, oy, size, t, subs);
+    }
+
+    // Ambient trench atmosphere: a depth gradient (darker/bluer toward the
+    // seabed), a soft light shaft from the surface, and drifting motes/bubbles.
+    // Purely decorative and drawn between the tiles and the fog layer.
+    let particles = null;
+    let particleDims = null;
+    function ensureParticles(w, h) {
+      const key = w + "x" + h;
+      if (particleDims === key && particles) return;
+      particleDims = key;
+      const n = Math.round(w * h / 9);
+      particles = [];
+      for (let i = 0; i < n; i++) {
+        particles.push({
+          x: Math.random() * w,
+          y: Math.random() * h,
+          r: 0.04 + Math.random() * 0.06,   // radius in cells
+          spd: 0.15 + Math.random() * 0.35, // rise speed (cells/sec)
+          amp: 0.1 + Math.random() * 0.3,   // horizontal wobble amplitude
+          ph: Math.random() * Math.PI * 2,  // wobble phase
+        });
+      }
+    }
+
+    let ambientLast = null;
+    function drawAmbient(g, ox, oy, size, t) {
+      const b = state.board;
+      const W = b.width * size, H = b.height * size;
+      // depth tint
+      const grd = g.createLinearGradient(0, oy, 0, oy + H);
+      grd.addColorStop(0, "rgba(30,90,130,0.10)");
+      grd.addColorStop(1, "rgba(0,6,14,0.55)");
+      g.fillStyle = grd;
+      g.fillRect(ox, oy, W, H);
+      // surface light shaft
+      const lg = g.createRadialGradient(
+        ox + W * 0.5, oy - H * 0.15, size,
+        ox + W * 0.5, oy - H * 0.15, H * 1.1);
+      lg.addColorStop(0, "rgba(120,200,255,0.10)");
+      lg.addColorStop(1, "rgba(120,200,255,0)");
+      g.fillStyle = lg;
+      g.fillRect(ox, oy, W, H);
+      // bubbles / motes
+      ensureParticles(b.width, b.height);
+      const dt = ambientLast === null ? 0 : Math.min(0.1, (t - ambientLast) / 1000);
+      ambientLast = t;
+      g.save();
+      g.fillStyle = "rgba(150,220,255,0.35)";
+      for (const p of particles) {
+        p.y -= p.spd * dt;
+        if (p.y < -0.1) { p.y = b.height + 0.1; p.x = Math.random() * b.width; }
+        const wob = Math.sin(t / 1000 + p.ph) * p.amp;
+        const px = ox + (p.x + wob) * size;
+        const py = oy + p.y * size;
+        g.globalAlpha = 0.15 + 0.25 * (0.5 + 0.5 * Math.sin(t / 700 + p.ph));
+        g.beginPath();
+        g.arc(px, py, p.r * size, 0, Math.PI * 2);
+        g.fill();
+      }
+      g.restore();
+      g.globalAlpha = 1;
     }
 
     // Shade every tile the player can't currently see, then draw ink clouds
@@ -1444,12 +1738,21 @@
     const DIR_VEC = { N: [0, -1], E: [1, 0], S: [0, 1], W: [-1, 0] };
     const ROT_L = { N: "W", W: "S", S: "E", E: "N" };
     const ROT_R = { N: "E", E: "S", S: "W", W: "N" };
-    const PHASE_MS = 1000;
+    const PHASE_MS = 1050;
+    // Fraction of each register's window spent moving; the remainder is a
+    // brief settle/hold so the step-by-step cadence reads clearly.
+    const MOVE_FRACTION = 0.8;
 
     // Ease-in-out so each register's motion accelerates then settles,
     // giving the replay a deliberate, step-by-step feel.
     function easeInOut(t) {
       return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    }
+
+    // Map a segment fraction to eased motion progress: move over the first
+    // MOVE_FRACTION of the window, then hold at 1 for the settle beat.
+    function easeStep(frac) {
+      return easeInOut(Math.min(1, frac / MOVE_FRACTION));
     }
 
     function isWall(x, y) {
@@ -1568,7 +1871,29 @@
       });
       const frames = [snapshotSubs(state.subs)]
         .concat(phases.map((ph) => ph.submarines || []));
-      state.anim = { frames, phases, finalSubs, colorById, t0: null, seg: 0, frac: 0 };
+      state.anim = { frames, phases, finalSubs, colorById, t0: null,
+                     seg: 0, frac: 0, lastSfxSeg: -1 };
+    }
+
+    // Play the combat SFX for a replay phase, de-duplicating by sound so a
+    // phase with several hits doesn't stack into a wall of noise.
+    function playPhaseSfx(events) {
+      if (!state.soundOn || !events) return;
+      const done = {};
+      const once = (k, fn) => { if (!done[k]) { done[k] = 1; fn(); } };
+      events.forEach((ev) => {
+        switch (ev.type) {
+          case "torpedo":     once("torpedo", Sfx.torpedo); break;
+          case "sonar_ping":  once("sonar", Sfx.sonar); break;
+          case "explosion":   once("explosion", Sfx.explosion); break;
+          case "mine":        once("mine", Sfx.mine); break;
+          case "emp_burst":   once("emp", Sfx.emp); break;
+          case "ram":         once("ram", Sfx.hit); break;
+          case "hit":         once("hit", Sfx.creak); break;
+          case "destroyed":   once("destroyed", Sfx.explosion); break;
+          default: break;
+        }
+      });
     }
 
     function snapshotSubs(subs) {
@@ -1601,7 +1926,11 @@
       const frac = (elapsed % PHASE_MS) / PHASE_MS;
       a.seg = seg;
       a.frac = frac;
-      const ef = easeInOut(frac);
+      if (seg !== a.lastSfxSeg) {
+        a.lastSfxSeg = seg;
+        playPhaseSfx((a.phases[seg] || {}).events);
+      }
+      const ef = easeStep(frac);
       const from = indexById(a.frames[seg]);
       const to = indexById(a.frames[seg + 1]);
       const out = [];
@@ -1637,6 +1966,7 @@
         renderBoard(t);
         updateTimer();
         updateRegisterHighlight();
+        updatePhasePill();
       }
       requestAnimationFrame(tick);
     }
@@ -1695,6 +2025,9 @@
     });
     el.btnLock.addEventListener("click", lockRegisters);
     el.btnSonar.addEventListener("click", toggleSonar);
+    el.btnSound.addEventListener("click", toggleSound);
+    // Resume the (autoplay-gated) audio context on the first user gesture.
+    window.addEventListener("pointerdown", () => Sfx.unlock(), { once: true });
 
     // --- map hover tooltips --------------------------------------------
     const FEATURE_TIP = {
@@ -1906,6 +2239,7 @@
 
     // --- init -----------------------------------------------------------
     el.nameInput.value = localStorage.getItem(LS_NAME) || "";
+    updateSoundButton();
     setView("home");
     log("sys", "Ready.");
     connect();

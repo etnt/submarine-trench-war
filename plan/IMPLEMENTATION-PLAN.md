@@ -196,12 +196,12 @@ Goal: keep matches from stalling and prevent camping.
 
 Goal: make it feel good to play.
 
-* [ ] Sound design: sonar pings, torpedo launches, hull creaks (Web Audio).
-* [ ] Improved phase-replay animation timing and easing.
-* [ ] Visual theming (trench depth gradient, lighting, particle effects).
-* [ ] Clear turn/phase indicators and player status panels.
-* [ ] Accessibility: colorblind-safe player colors, readable HUD.
-* [ ] Error/edge-case messaging (disconnects, room full, invalid moves).
+* [x] Sound design: sonar pings, torpedo launches, hull creaks (Web Audio).
+* [x] Improved phase-replay animation timing and easing.
+* [x] Visual theming (trench depth gradient, lighting, particle effects).
+* [x] Clear turn/phase indicators and player status panels.
+* [x] Accessibility: colorblind-safe player colors, readable HUD.
+* [x] Error/edge-case messaging (disconnects, room full, invalid moves).
 
 **Milestone:** The game looks and sounds like a submarine trench war.
 

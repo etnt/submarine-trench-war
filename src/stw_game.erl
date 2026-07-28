@@ -27,7 +27,11 @@
 -export([resolve_data/3, extraction_path/1]).
 -endif.
 
--define(COLORS, [<<"#3cf">>, <<"#f83">>, <<"#6c6">>, <<"#c6f">>]).
+%% Colourblind-safe fleet palette (Okabe-Ito derived): sky blue, orange,
+%% bluish-green, reddish-purple. Chosen to stay distinguishable under the
+%% common deutan/protan/tritan confusions; sub shape + name labels add a
+%% second, non-colour channel on top.
+-define(COLORS, [<<"#4eb3f5">>, <<"#e69f00">>, <<"#12b886">>, <<"#cc79a7">>]).
 -define(START_HULL, 10).
 -define(REGISTERS, 5).
 -define(BASE_HAND, 9).
