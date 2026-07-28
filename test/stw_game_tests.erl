@@ -15,6 +15,7 @@ lobby_flow_test_() ->
         [ fun create_and_join/0,
           fun room_not_found/0,
           fun reconnect_resumes_room/0,
+          fun reconnect_to_finished_game/0,
           fun host_starts_game/0,
           fun full_round_resolves/0,
           fun deals_full_hand/0,
@@ -77,6 +78,33 @@ reconnect_resumes_room() ->
     L = expect_push(<<"lobby_state">>),
     [Player] = maps:get(<<"players">>, L),
     ?assertEqual(true, maps:get(<<"connected">>, Player)).
+
+%% Reconnecting to a match that has already finished must not crash the
+%% game server; it replays the final state and game_over to the client.
+%% We drive the game into the finished phase with sys:replace_state so the
+%% test stays deterministic (record fields: phase=6, winner=24,
+%% finish_reason=25 in stw_game's #state{}).
+reconnect_to_finished_game() ->
+    flush(),
+    {P1, T1, undefined} = stw_lobby:hello(undefined, <<"Dana">>),
+    {ok, Room, GamePid} = stw_lobby:create_game(T1, #{}),
+    {ok, true} = stw_game:join(GamePid, P1, <<"Dana">>, self()),
+    _ = expect_push(<<"lobby_state">>),
+    ok = stw_game:start_game(GamePid, P1),
+    _ = expect_push(<<"game_started">>),
+    flush(),
+    sys:replace_state(GamePid, fun(S0) ->
+        S1 = setelement(6, S0, finished),      %% phase
+        S2 = setelement(24, S1, P1),           %% winner
+        setelement(25, S2, <<"survivor">>)     %% finish_reason
+    end),
+    {ok, GamePid} = stw_lobby:lookup_room(Room),
+    ok = stw_game:reconnect(GamePid, P1, self()),
+    GO = expect_push(<<"game_over">>),
+    ?assertEqual(P1, maps:get(<<"winner">>, GO)),
+    ?assertEqual(<<"survivor">>, maps:get(<<"reason">>, GO)),
+    %% Server is still alive and responsive after the reconnect.
+    ?assert(is_process_alive(GamePid)).
 
 %% Only the host can start; starting broadcasts game_started.
 host_starts_game() ->

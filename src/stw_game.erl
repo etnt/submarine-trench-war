@@ -71,6 +71,8 @@
     eidx = 0 :: non_neg_integer(),
     revealed = [] :: [binary()],
     winner = undefined :: binary() | undefined,
+    finish_reason = undefined :: binary() | undefined,
+    runner_up = undefined :: binary() | undefined,
     timer_ref :: reference() | undefined,
     timer_ends :: integer() | undefined
 }).
@@ -183,6 +185,13 @@ handle_call({reconnect, PlayerId, WsPid}, _From, S) ->
                     push_hand(S1, PlayerId),
                     maybe_restore_program(S1, PlayerId, WsPid),
                     maybe_push_timer(S1, WsPid);
+                finished ->
+                    push(WsPid, <<"game_started">>, game_started_payload(S1)),
+                    push(WsPid, <<"game_state">>, player_view(S1, PlayerId)),
+                    push(WsPid, <<"game_over">>,
+                         game_over_payload(S1, S1#state.winner,
+                                           S1#state.finish_reason,
+                                           S1#state.runner_up));
                 lobby ->
                     ok
             end,
@@ -203,6 +212,7 @@ handle_call({start_game, PlayerId}, _From, S) ->
                          nodes = stw_board:data_nodes(S#state.board),
                          epath = EPath, eidx = 0, extraction = hd(EPath),
                          revealed = [], winner = undefined,
+                         finish_reason = undefined, runner_up = undefined,
                          timer_ref = undefined, timer_ends = undefined},
             logger:info("stw game ~s started with ~p players",
                         [S#state.room_code, map_size(S#state.players)]),
@@ -958,6 +968,7 @@ end_match(S, Winner, Reason, RunnerUp) ->
     logger:info("stw game ~s over (winner=~p reason=~s round=~p)",
                 [S#state.room_code, Winner, Reason, S#state.round]),
     S1 = S#state{phase = finished, winner = Winner,
+                 finish_reason = Reason, runner_up = RunnerUp,
                  programs = #{}, locked = [], submitted = #{},
                  revealed = alive_ids(S),
                  timer_ref = undefined, timer_ends = undefined},
