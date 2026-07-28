@@ -183,10 +183,10 @@ Goal: round out the deck and layer-based tactics.
 
 Goal: keep matches from stalling and prevent camping.
 
-* [ ] Collapse events: periodically turn a random trench section into wall.
-* [ ] Ensure collapses never fully trap a player or block all routes.
-* [ ] Additional maps and a simple map selection.
-* [ ] Client: animate collapses and dynamic tile changes.
+* [x] Collapse events: periodically turn a random trench section into wall.
+* [x] Ensure collapses never fully trap a player or block all routes.
+* [x] Additional maps and a simple map selection.
+* [x] Client: animate collapses and dynamic tile changes.
 
 **Milestone:** The board evolves over the course of a match.
 

@@ -35,6 +35,10 @@
 -define(PING_TIMER_MS, 30000).
 %% Data nodes a submarine must carry before it can extract and win.
 -define(WIN_DATA, 3).
+%% Dynamic map: every Nth round a trench section caves in (keeps matches
+%% moving and discourages camping). COLLAPSE_TILES sections cave per event.
+-define(COLLAPSE_INTERVAL, 3).
+-define(COLLAPSE_TILES, 1).
 
 -record(state, {
     room_code :: binary(),
@@ -116,10 +120,11 @@ set_sonar_mode(GamePid, PlayerId, Mode) ->
 %% --- gen_server -------------------------------------------------------
 
 init({RoomCode, Opts}) ->
+    MapId = opt(map_id, Opts, <<"trench_alpha">>),
     {ok, #state{room_code = RoomCode,
-                map_id = opt(map_id, Opts, <<"trench_alpha">>),
+                map_id = MapId,
                 max_players = opt(max_players, Opts, 4),
-                board = stw_board:default()}}.
+                board = stw_board:by_id(MapId)}}.
 
 handle_call({join, PlayerId, DisplayName, WsPid}, _From, S) ->
     case maps:is_key(PlayerId, S#state.players) of
@@ -717,11 +722,18 @@ resolve_round(S, AutoFilled) ->
             %% advance the patrolling extraction zone before the next round.
             Leaders = extraction_leaders(S1),
             {Extraction1, Eidx1} = advance_extraction(S1),
-            S2 = S1#state{round = S1#state.round + 1,
+            NextRound = S1#state.round + 1,
+            %% Dynamic map: periodically cave in a trench section for the new
+            %% round (never one that would trap a sub or split the board).
+            {Board2, Collapsed} =
+                maybe_collapse(S1#state{extraction = Extraction1}, NextRound),
+            S2 = S1#state{round = NextRound,
+                          board = Board2,
                           programs = #{}, locked = [], submitted = #{},
                           ink = Ink1, revealed = Leaders, decoys = Decoys,
                           extraction = Extraction1, eidx = Eidx1,
                           timer_ref = undefined, timer_ends = undefined},
+            broadcast_collapse(S2, Collapsed),
             announce_leaders(S2, Leaders),
             deal_and_announce(S2)
     end.
@@ -746,6 +758,55 @@ advance_extraction(#state{epath = []} = S) ->
 advance_extraction(#state{epath = Path, eidx = Idx}) ->
     Idx1 = (Idx + 1) rem length(Path),
     {lists:nth(Idx1 + 1, Path), Idx1}.
+
+%% --- Dynamic map: trench collapses ------------------------------------
+
+%% Every ?COLLAPSE_INTERVAL rounds, cave in up to ?COLLAPSE_TILES trench
+%% sections for the upcoming round. Returns the (possibly) mutated board and
+%% the coords that collapsed (empty when it is not a collapse round or no safe
+%% candidate exists).
+maybe_collapse(S, Round) ->
+    case Round rem ?COLLAPSE_INTERVAL =:= 0 of
+        false -> {S#state.board, []};
+        true -> do_collapse(S, ?COLLAPSE_TILES, S#state.board, [])
+    end.
+
+do_collapse(_S, 0, Board, Acc) ->
+    {Board, lists:reverse(Acc)};
+do_collapse(S, N, Board, Acc) ->
+    case collapse_candidates(S, Board) of
+        [] ->
+            {Board, lists:reverse(Acc)};
+        Cands ->
+            Coord = lists:nth(rand:uniform(length(Cands)), Cands),
+            do_collapse(S, N - 1, stw_board:collapse(Board, Coord),
+                        [Coord | Acc])
+    end.
+
+%% Plain trench tiles that are safe to wall: not occupied by a live sub, not an
+%% objective (data node, extraction, or a tile on the extraction patrol), not a
+%% feature (current/turbulence), and whose removal keeps the whole map
+%% connected so nobody is ever trapped.
+collapse_candidates(S, Board) ->
+    Occupied = [{maps:get(x, Sub), maps:get(y, Sub)}
+                || Sub <- maps:values(S#state.subs),
+                   maps:get(alive, Sub, true)],
+    Protected = sets:from_list(
+                  Occupied ++ S#state.nodes ++ S#state.epath ++
+                  [S#state.extraction]),
+    [C || C <- stw_board:open_tiles(Board),
+          stw_board:tile_at(Board, C) =:= trench,
+          not sets:is_element(C, Protected),
+          stw_board:current_at(Board, C) =:= none,
+          not stw_board:turbulence_at(Board, C),
+          stw_board:connected(stw_board:collapse(Board, C))].
+
+broadcast_collapse(_S, []) ->
+    ok;
+broadcast_collapse(S, Collapsed) ->
+    broadcast(S, <<"map_collapse">>,
+              #{<<"round">> => S#state.round,
+                <<"tiles">> => [coord_json(C) || C <- Collapsed]}).
 
 %% Apply node downloads (a sub ending its round on a node collects it) and
 %% data theft (a sub carrying data that took a torpedo hit drops one node on

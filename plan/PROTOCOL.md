@@ -250,6 +250,12 @@ The board is sent as rows of single-character tiles plus a `legend` mapping
 each character to a `kind`. Rows are top-to-bottom (`y = 0` first); each row is
 `width` characters, left-to-right (`x = 0` first).
 
+> **Phase 9 note:** the seated map is chosen at `create_game` time via
+> `map_id` (default `trench_alpha`). Available maps are advertised by the
+> server board registry — currently `trench_alpha` (Trench Alpha) and
+> `trench_beta` (Trench Bravo). `map_id` also rides `lobby_state` so the
+> lobby can show the chosen map. Unknown ids fall back to Trench Alpha.
+
 ```json
 {
   "type": "game_started",
@@ -663,6 +669,27 @@ is revealed to all players for one turn.
     "data_collected": 3,
     "x": 5,
     "y": 5
+  }
+}
+```
+
+### `map_collapse`
+Broadcast when the trench collapses: one or more tiles turn to solid wall for
+the rest of the match. Sent to every player (terrain is common knowledge);
+clients patch these tiles into their local board grid and may animate the
+cave-in. Collapses are chosen so the board stays fully connected — they never
+trap a submarine or seal off a route.
+
+> **Phase 9 note:** fires every third round (at the start of rounds 3, 6, 9…),
+> just before `round_started`. `round` is the round the walls take effect in;
+> `tiles` lists the newly walled coordinates.
+
+```json
+{
+  "type": "map_collapse",
+  "payload": {
+    "round": 3,
+    "tiles": [ { "x": 7, "y": 6 } ]
   }
 }
 ```

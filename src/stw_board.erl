@@ -21,9 +21,9 @@
 %%%-------------------------------------------------------------------
 -module(stw_board).
 
--export([default/0, to_json/1, tile_at/2, dims/1, spawns/1, legend/0]).
--export([current_at/2, turbulence_at/2, clear_mine/2]).
--export([data_nodes/1, extraction/1]).
+-export([default/0, by_id/1, maps/0, to_json/1, tile_at/2, dims/1, spawns/1, legend/0]).
+-export([current_at/2, turbulence_at/2, clear_mine/2, collapse/2]).
+-export([data_nodes/1, extraction/1, open_tiles/1, connected/1]).
 
 -define(W, 20).
 -define(H, 12).
@@ -46,17 +46,79 @@
 
 %% --- construction -----------------------------------------------------
 
-%% @doc The first hand-designed map: a narrow trench network with forks,
-%% four corner spawns, scattered data nodes, a top-centre extraction zone,
-%% and a couple of mines and thermal vents.
+%% @doc The default map used when a room does not pick one.
 -spec default() -> board().
 default() ->
-    Walls = wall_set(),
-    Spawns = [{2, 2}, {17, 2}, {2, 9}, {17, 9}],
-    DataNodes = [{3, 5}, {8, 8}, {12, 3}, {16, 6}],
-    Extraction = {10, 1},
-    Mines = [{6, 3}, {13, 9}],
-    Vents = [{9, 7}, {11, 3}],
+    by_id(<<"trench_alpha">>).
+
+%% @doc Build a board by its map id. Unknown ids fall back to the default so
+%% a stale or bad selection never crashes a game.
+-spec by_id(binary()) -> board().
+by_id(<<"trench_beta">>) -> build_beta();
+by_id(_) -> build_alpha().
+
+%% @doc The catalogue of selectable maps: `{id, human name}` pairs the lobby
+%% offers to the host. Keep in sync with `by_id/1`.
+-spec maps() -> [map()].
+maps() ->
+    [#{<<"id">> => <<"trench_alpha">>, <<"name">> => <<"Trench Alpha">>},
+     #{<<"id">> => <<"trench_beta">>, <<"name">> => <<"Trench Bravo">>}].
+
+%% Trench Alpha: a narrow trench network with vertical forks, four corner
+%% spawns, scattered data nodes, a top-centre extraction zone, and a couple
+%% of mines and thermal vents.
+build_alpha() ->
+    assemble(#{
+      walls => alpha_walls(),
+      spawns => [{2, 2}, {17, 2}, {2, 9}, {17, 9}],
+      data_nodes => [{3, 5}, {8, 8}, {12, 3}, {16, 6}],
+      extraction => {10, 1},
+      mines => [{6, 3}, {13, 9}],
+      vents => [{9, 7}, {11, 3}],
+      %% Currents drift a submarine after each register resolves. Placed on
+      %% open trench so they never point a sub straight into a wall gap.
+      currents => #{{7, 2} => {e, 1}, {8, 2} => {e, 1}, {9, 2} => {e, 1},
+                    {12, 9} => {n, 1}, {12, 8} => {n, 1}},
+      %% Turbulence spins a submarine 90 degrees clockwise on entry.
+      turbulence => [{8, 6}]}).
+
+%% Trench Bravo: horizontal ledges instead of vertical forks, so the fleet
+%% weaves top-right then bottom-left through the two gaps. Same four corner
+%% spawns and top-row extraction patrol.
+build_beta() ->
+    assemble(#{
+      walls => beta_walls(),
+      spawns => [{2, 2}, {17, 2}, {2, 9}, {17, 9}],
+      data_nodes => [{5, 5}, {14, 3}, {9, 9}, {16, 8}],
+      extraction => {10, 1},
+      mines => [{8, 3}, {12, 8}],
+      vents => [{4, 6}, {15, 5}],
+      currents => #{{2, 5} => {e, 1}, {3, 5} => {e, 1}, {16, 6} => {w, 1}},
+      turbulence => [{10, 6}]}).
+
+%% Vertical wall segments alternately attached to the top and bottom border,
+%% each leaving a gap at the opposite end so the corridors weave but stay
+%% fully connected (the test suite flood-fills to prove it).
+alpha_walls() ->
+    lists:usort(
+      seg_v(5, 1, 8) ++      %% attached to top, gap at the bottom
+      seg_v(10, 3, 10) ++    %% attached to bottom, gap at the top
+      seg_v(14, 1, 8)).      %% attached to top, gap at the bottom
+
+%% Horizontal ledges: one hugging the left with a gap on the right, one
+%% hugging the right with a gap on the left, forming an S-shaped route.
+beta_walls() ->
+    lists:usort(
+      seg_h(4, 1, 13) ++     %% gap on the right (x=14..18)
+      seg_h(7, 6, 18)).      %% gap on the left  (x=1..5)
+
+seg_v(X, Y1, Y2) -> [{X, Y} || Y <- lists:seq(Y1, Y2)].
+seg_h(Y, X1, X2) -> [{X, Y} || X <- lists:seq(X1, X2)].
+
+%% Assemble a board map from an authoring spec.
+assemble(#{walls := Walls, spawns := Spawns, data_nodes := DataNodes,
+           extraction := Extraction, mines := Mines, vents := Vents,
+           currents := Currents, turbulence := Turbulence}) ->
     Tiles = build_tiles(Walls, Spawns, DataNodes, Extraction, Mines, Vents),
     #{width => ?W,
       height => ?H,
@@ -64,24 +126,8 @@ default() ->
       spawns => Spawns,
       data_nodes => DataNodes,
       extraction => Extraction,
-      %% Currents drift a submarine after each register resolves. Placed on
-      %% open trench so they never point a sub straight into a wall gap.
-      currents => #{{7, 2} => {e, 1}, {8, 2} => {e, 1}, {9, 2} => {e, 1},
-                    {12, 9} => {n, 1}, {12, 8} => {n, 1}},
-      %% Turbulence spins a submarine 90 degrees clockwise on entry.
-      turbulence => [{8, 6}]}.
-
-%% Interior wall segments creating the fork/serpentine feel. The vertical
-%% walls alternately attach to the top and bottom border, each leaving a
-%% two-tile gap at the opposite end, so the corridors weave but stay fully
-%% connected (the test suite flood-fills to prove it).
-wall_set() ->
-    lists:usort(
-      seg_v(5, 1, 8) ++      %% attached to top, gap at the bottom
-      seg_v(10, 3, 10) ++    %% attached to bottom, gap at the top
-      seg_v(14, 1, 8)).      %% attached to top, gap at the bottom
-
-seg_v(X, Y1, Y2) -> [{X, Y} || Y <- lists:seq(Y1, Y2)].
+      currents => Currents,
+      turbulence => Turbulence}.
 
 build_tiles(Walls, Spawns, DataNodes, Extraction, Mines, Vents) ->
     WallSet = maps:from_keys(Walls, wall),
@@ -125,6 +171,48 @@ clear_mine(Board, Coord) ->
         mine -> Board#{tiles => maps:put(Coord, trench, Tiles)};
         _ -> Board
     end.
+
+%% @doc Cave a tile in: turn it into wall and strip any current/turbulence it
+%% carried. Used by dynamic map (collapse) events. Callers are responsible for
+%% checking `connected/1` first so a collapse never traps a submarine.
+-spec collapse(board(), coord()) -> board().
+collapse(Board, Coord) ->
+    Tiles = maps:get(tiles, Board),
+    Currents = maps:get(currents, Board, #{}),
+    Turb = maps:get(turbulence, Board, []),
+    Board#{tiles => maps:put(Coord, wall, Tiles),
+           currents => maps:remove(Coord, Currents),
+           turbulence => lists:delete(Coord, Turb)}.
+
+%% @doc Every passable (non-wall) tile on the board.
+-spec open_tiles(board()) -> [coord()].
+open_tiles(Board) ->
+    {W, H} = dims(Board),
+    [{X, Y} || Y <- lists:seq(0, H - 1), X <- lists:seq(0, W - 1),
+               tile_at(Board, {X, Y}) =/= wall].
+
+%% @doc True when every open tile is reachable from every other open tile.
+%% A flood-fill from one open tile must cover all of them. Used to guarantee
+%% collapses never split the map or strand a submarine/objective.
+-spec connected(board()) -> boolean().
+connected(Board) ->
+    case open_tiles(Board) of
+        [] -> true;
+        [Start | _] = Open ->
+            Seen = flood(Board, [Start], sets:new()),
+            lists:all(fun(C) -> sets:is_element(C, Seen) end, Open)
+    end.
+
+flood(_Board, [], Seen) ->
+    Seen;
+flood(Board, [C | Rest], Seen) ->
+    case sets:is_element(C, Seen) orelse tile_at(Board, C) =:= wall of
+        true -> flood(Board, Rest, Seen);
+        false -> flood(Board, neighbours(C) ++ Rest, sets:add_element(C, Seen))
+    end.
+
+neighbours({X, Y}) ->
+    [{X + 1, Y}, {X - 1, Y}, {X, Y + 1}, {X, Y - 1}].
 
 -spec dims(board()) -> {pos_integer(), pos_integer()}.
 dims(Board) ->

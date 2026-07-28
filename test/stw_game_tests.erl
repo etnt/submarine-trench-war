@@ -21,7 +21,9 @@ lobby_flow_test_() ->
           fun timeout_autofills/0,
           fun fog_hides_distant_enemy/0,
           fun active_sonar_reveals/0,
-          fun objectives_in_game_state/0 ]
+          fun objectives_in_game_state/0,
+          fun map_selection_uses_named_board/0,
+          fun map_collapse_after_interval/0 ]
     end}.
 
 setup() ->
@@ -248,6 +250,51 @@ objectives_in_game_state() ->
     %% Phase 8: the fog view also carries a (starts-empty) decoy contact list.
     ?assertEqual([], maps:get(<<"decoys">>, GS)).
 
+%% Phase 9: choosing a map id at create time seats players on that named
+%% board. Trench Bravo carries a horizontal ledge at y=4 (x=1..13), so the
+%% game_started grid row 4 shows rock where Trench Alpha would be open.
+map_selection_uses_named_board() ->
+    flush(),
+    {P1, T1, undefined} = stw_lobby:hello(undefined, <<"Yara">>),
+    {ok, _Room, GamePid} =
+        stw_lobby:create_game(T1, #{map_id => <<"trench_beta">>}),
+    {ok, true} = stw_game:join(GamePid, P1, <<"Yara">>, self()),
+    L = expect_push(<<"lobby_state">>),
+    ?assertEqual(<<"trench_beta">>, maps:get(<<"map_id">>, L)),
+    {P2, _T2, _} = stw_lobby:hello(undefined, <<"Zed">>),
+    {ok, false} = stw_game:join(GamePid, P2, <<"Zed">>, self()),
+    flush(),
+    ok = stw_game:start_game(GamePid, P1),
+    GS = expect_push(<<"game_started">>),
+    ?assertEqual(<<"trench_beta">>, maps:get(<<"map_id">>, GS)),
+    Grid = maps:get(<<"grid">>, maps:get(<<"board">>, GS)),
+    Row4 = lists:nth(5, Grid),
+    ?assertEqual($#, binary:at(Row4, 3)).
+
+%% Phase 9: every third round the trench collapses. Play two full rounds and
+%% the game broadcasts a map_collapse naming the round and the walled tiles.
+map_collapse_after_interval() ->
+    flush(),
+    {P1, T1, undefined} = stw_lobby:hello(undefined, <<"Ada">>),
+    {ok, _Room, GamePid} = stw_lobby:create_game(T1, #{}),
+    {ok, true} = stw_game:join(GamePid, P1, <<"Ada">>, self()),
+    {P2, _T2, _} = stw_lobby:hello(undefined, <<"Bly">>),
+    {ok, false} = stw_game:join(GamePid, P2, <<"Bly">>, self()),
+    flush(),
+    ok = stw_game:start_game(GamePid, P1),
+    _ = expect_push(<<"round_started">>),
+    play_round(GamePid, P1, P2),
+    _ = expect_push(<<"round_started">>),
+    play_round(GamePid, P1, P2),
+    Collapse = expect_push(<<"map_collapse">>),
+    ?assertEqual(3, maps:get(<<"round">>, Collapse)),
+    Tiles = maps:get(<<"tiles">>, Collapse),
+    ?assert(length(Tiles) >= 1),
+    [begin
+         ?assert(is_integer(maps:get(<<"x">>, Tile))),
+         ?assert(is_integer(maps:get(<<"y">>, Tile)))
+     end || Tile <- Tiles].
+
 %% --- pure objective-logic tests ---------------------------------------
 
 %% A submarine ending its round on a data node downloads it: its data count
@@ -330,6 +377,16 @@ deal_for(PlayerId) ->
 draft(Deal) ->
     Cards = maps:get(<<"cards">>, Deal),
     [maps:get(<<"id">>, C) || C <- lists:sublist(Cards, 5)].
+
+%% Draft, program and lock both players so the current round fully resolves.
+play_round(GamePid, P1, P2) ->
+    Prog1 = draft(deal_for(P1)),
+    Prog2 = draft(deal_for(P2)),
+    ok = stw_game:program_registers(GamePid, P1, Prog1),
+    ok = stw_game:program_registers(GamePid, P2, Prog2),
+    ok = stw_game:lock_registers(GamePid, P1),
+    ok = stw_game:lock_registers(GamePid, P2),
+    ok.
 
 flush() ->
     receive _ -> flush() after 0 -> ok end.

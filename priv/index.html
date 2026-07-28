@@ -263,7 +263,7 @@
 <body>
   <header>
     <h1>Submarine Trench War</h1>
-    <div class="subtitle">Phase 8 &mdash; tactical cards &amp; depth</div>
+    <div class="subtitle">Phase 9 &mdash; dynamic map events</div>
   </header>
 
   <main>
@@ -305,6 +305,13 @@
       </div>
       <div class="controls" style="margin-bottom: 14px;">
         <button id="btnCreate" class="primary">Create Room</button>
+      </div>
+      <div class="field">
+        <label for="mapSelect">Map</label>
+        <select id="mapSelect">
+          <option value="trench_alpha">Trench Alpha</option>
+          <option value="trench_beta">Trench Bravo</option>
+        </select>
       </div>
       <div class="field">
         <label for="roomInput">Join with room code</label>
@@ -402,6 +409,7 @@
       visibleTiles: null,// Set of "x,y" I can currently see, or null (no fog)
       inkClouds: [],    // [{ x, y }] ink clouds blocking vision
       decoys: [],       // [{ x, y }] false contacts on my scope
+      collapses: [],    // [{ x, y, t0 }] in-flight trench-collapse animations
       spectator: false, // am I watching with a full-board view?
       sonarMode: "passive", // my sonar mode: passive | active
       dataNodes: [],    // [{ x, y }] data nodes I can currently see
@@ -438,7 +446,7 @@
       log: $("log"),
       viewHome: $("viewHome"), viewLobby: $("viewLobby"), viewGame: $("viewGame"),
       nameInput: $("nameInput"), roomInput: $("roomInput"),
-      btnCreate: $("btnCreate"), btnJoin: $("btnJoin"),
+      btnCreate: $("btnCreate"), btnJoin: $("btnJoin"), mapSelect: $("mapSelect"),
       roomCode: $("roomCode"), playerList: $("playerList"),
       btnReady: $("btnReady"), btnStart: $("btnStart"), btnLeave: $("btnLeave"),
       gamePlayers: $("gamePlayers"), btnLeaveGame: $("btnLeaveGame"),
@@ -558,6 +566,7 @@
         case "revealed_cards": onRevealedCards(p); break;
         case "game_state": onGameState(p); break;
         case "extraction_announced": onExtractionAnnounced(p); break;
+        case "map_collapse": onMapCollapse(p); break;
         case "game_over": onGameOver(p); break;
         case "error": onError(p); break;
         case "pong": break;
@@ -624,6 +633,7 @@
       state.gameOver = false;
       el.gameOverModal.classList.add("hidden");
       if (p.board) state.board = p.board;
+      state.collapses = [];
       if (p.submarines) state.subs = p.submarines;
       // game_started is unfogged: record every player's colour + name so we
       // can label fogged sonar contacts consistently for the rest of the game.
@@ -827,6 +837,29 @@
         (state.roster[p.player_id] || {}).display_name || p.player_id;
       log("warn", "\u26a0 " + nm + " is extraction-ready (" +
         p.data_collected + " data) \u2014 position revealed!");
+    }
+
+    // The trench is evolving: sections cave in and become impassable rock.
+    // Update the local grid so movement/pathing reflects the new walls, and
+    // queue a short cave-in animation on each affected tile.
+    function onMapCollapse(p) {
+      const tiles = p.tiles || [];
+      tiles.forEach((c) => {
+        collapseTile(c.x, c.y);
+        state.collapses.push({ x: c.x, y: c.y, t0: null });
+      });
+      if (tiles.length) {
+        log("warn", "\u26a0 Trench collapse! " + tiles.length +
+          " section(s) caved in.");
+      }
+    }
+
+    // Turn a tile to wall ("#") in the local grid after a collapse.
+    function collapseTile(x, y) {
+      const b = state.board;
+      if (!b || !b.grid || !b.grid[y]) return;
+      const row = b.grid[y];
+      b.grid[y] = row.slice(0, x) + "#" + row.slice(x + 1);
     }
 
     // The match has ended. Show the standings and the winner.
@@ -1070,6 +1103,7 @@
       drawFog(g, ox, oy, size, t);
       drawObjectives(g, ox, oy, size, t);
       drawDecoys(g, ox, oy, size, t);
+      drawCollapses(g, ox, oy, size, t);
 
       const subs = state.anim ? animatedSubs(t) : state.subs;
       if (!state.anim) drawGhostPath(g, ox, oy, size);
@@ -1159,6 +1193,36 @@
         g.arc(cx, cy, size * 0.32, 0, Math.PI * 2);
         g.stroke();
         g.restore();
+      });
+    }
+
+    // Animate trench collapses: a brief rock-burst on each caved-in tile that
+    // fades as the debris settles. Entries are dropped once their animation
+    // completes (the tile is already a permanent wall in the grid).
+    function drawCollapses(g, ox, oy, size, t) {
+      const DUR = 900;
+      state.collapses = (state.collapses || []).filter((c) => {
+        if (c.t0 === null) c.t0 = t;
+        const k = (t - c.t0) / DUR;
+        if (k >= 1) return false;
+        const cx = ox + c.x * size + size / 2, cy = oy + c.y * size + size / 2;
+        g.save();
+        g.globalAlpha = 1 - k;
+        g.strokeStyle = "#7a5a3a";
+        g.lineWidth = 2 + 3 * (1 - k);
+        g.beginPath();
+        g.arc(cx, cy, size * (0.2 + 0.5 * k), 0, Math.PI * 2);
+        g.stroke();
+        g.fillStyle = `rgba(122,90,58,${0.6 * (1 - k)})`;
+        for (let a = 0; a < Math.PI * 2; a += Math.PI / 3) {
+          const rr = size * (0.15 + 0.35 * k);
+          g.beginPath();
+          g.arc(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr,
+            size * 0.09, 0, Math.PI * 2);
+          g.fill();
+        }
+        g.restore();
+        return true;
       });
     }
 
@@ -1611,7 +1675,7 @@
     // --- actions --------------------------------------------------------
     el.btnCreate.addEventListener("click", () => {
       persistName();
-      send("create_game", { max_players: 4, map_id: "trench_alpha" });
+      send("create_game", { max_players: 4, map_id: el.mapSelect.value });
     });
     el.btnJoin.addEventListener("click", () => {
       persistName();
@@ -1785,7 +1849,14 @@
         `<div class="help-row"><div class="help-glyph" style="color:#e05555">\u27a4</div>` +
         `<div class="help-name">Data theft</div>` +
         `<div class="help-desc">Torpedo a data-laden rival and they drop a ` +
-        `node on their tile for anyone to recover.</div></div></div>`;
+        `node on their tile for anyone to recover.</div></div></div>` +
+        `<div class="help-section"><h3>A shifting trench</h3>` +
+        `<div class="help-row"><div class="help-glyph" style="color:#7a5a3a">\u25a3</div>` +
+        `<div class="help-name">Collapse</div>` +
+        `<div class="help-desc">Every few rounds a trench section caves in and ` +
+        `becomes solid rock. Collapses never trap a sub or seal off the map, ` +
+        `but they reshape routes \u2014 don\u2019t get too comfortable.</div>` +
+        `</div></div>`;
       el.helpBody.dataset.built = "1";
     }
 

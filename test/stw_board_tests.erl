@@ -78,3 +78,54 @@ flood(B, [C | Rest], Seen) ->
 
 neighbours({X, Y}) ->
     [{X + 1, Y}, {X - 1, Y}, {X, Y + 1}, {X, Y - 1}].
+
+%% -- Phase 9: map registry, alternate maps, dynamic collapse -----------
+
+%% At least two maps are advertised for selection.
+maps_list_test() ->
+    Maps = stw_board:maps(),
+    ?assert(length(Maps) >= 2),
+    [?assert(maps:is_key(<<"id">>, M) andalso maps:is_key(<<"name">>, M))
+     || M <- Maps],
+    ok.
+
+%% by_id/1 returns distinct, fully connected boards for known ids and
+%% falls back to a valid board for unknown ids.
+by_id_test() ->
+    A = stw_board:by_id(<<"trench_alpha">>),
+    Beta = stw_board:by_id(<<"trench_beta">>),
+    ?assert(stw_board:connected(A)),
+    ?assert(stw_board:connected(Beta)),
+    ?assert(stw_board:connected(stw_board:by_id(<<"unknown_map">>))),
+    ok.
+
+%% The alternate map is fully connected from one of its spawns.
+beta_connectivity_test() ->
+    B = stw_board:by_id(<<"trench_beta">>),
+    Open = stw_board:open_tiles(B),
+    [Start | _] = stw_board:spawns(B),
+    Reached = flood(B, [Start], sets:new()),
+    Missing = [C || C <- Open, not sets:is_element(C, Reached)],
+    ?assertEqual([], Missing).
+
+%% A freshly built board is connected.
+connected_default_test() ->
+    ?assert(stw_board:connected(stw_board:default())).
+
+%% collapse/2 turns a target tile into wall.
+collapse_walls_tile_test() ->
+    B = stw_board:default(),
+    C = {8, 4},
+    ?assertNotEqual(wall, stw_board:tile_at(B, C)),
+    B1 = stw_board:collapse(B, C),
+    ?assertEqual(wall, stw_board:tile_at(B1, C)).
+
+%% connected/1 detects an isolated pocket: wall off all four neighbours of
+%% an interior open tile and it can no longer reach the rest of the map.
+connected_detects_isolation_test() ->
+    B = stw_board:default(),
+    C = {8, 4},
+    ?assertNotEqual(wall, stw_board:tile_at(B, C)),
+    B1 = lists:foldl(fun(N, Acc) -> stw_board:collapse(Acc, N) end,
+                     B, [{9, 4}, {7, 4}, {8, 5}, {8, 3}]),
+    ?assertNot(stw_board:connected(B1)).
