@@ -236,6 +236,68 @@ game logic is tested without spinning up any processes.
 
 ---
 
+## Deployment
+
+**Production release.** Build a self-contained release (with a bundled ERTS, so
+the target host needs no Erlang install) and run it in the foreground:
+
+```sh
+make release                              # rebar3 as prod release
+_build/prod/rel/stw/bin/stw foreground    # or: ... daemon / ... stop
+```
+
+**Container.** A multi-stage `Dockerfile` produces a slim, non-root runtime
+image. The container targets use **Podman** by default (daemonless and
+rootless); pass `CONTAINER=docker` to use Docker instead:
+
+```sh
+make container-build         # podman build -t submarine-trench-war:latest .
+make container-run           # publishes 8080; open http://localhost:8080
+# Docker instead of Podman:
+make container-build CONTAINER=docker
+```
+
+Pushing a version tag publishes the image automatically: the
+[`Build container image`](.github/workflows/container.yml) GitHub Action builds
+it with Podman on every `v*` tag and pushes it to the GitHub Container Registry
+at `ghcr.io/<owner>/submarine-trench-war` (tagged with the version and
+`latest`).
+
+```sh
+git tag v0.1.0 && git push --tags     # triggers the build & publish
+```
+
+**Runtime configuration** lives in [`config/sys.config`](config/sys.config) and
+is read from the `stw` application environment. Everything is hot-tunable for
+playtesting — change a value and it applies to subsequently created games with
+no recompile:
+
+| Key | Default | Meaning |
+| --- | ------- | ------- |
+| `http_port` | `8080` | Plain HTTP / `ws://` listener port. |
+| `tls` | *(off)* | Optional in-process HTTPS / `wss://` listener (`https_port`, `certfile`, `keyfile`). |
+| `base_hand` / `min_hand` | `9` / `5` | Cards dealt at full hull, and the floor as hull degrades. |
+| `win_data` | `3` | Data nodes a sub must carry to extract and win. |
+| `ping_timer_ms` | `30000` | Per-round programming window before auto-lock. |
+| `collapse_interval` | `3` | Every Nth round a trench section caves in. |
+
+**TLS / `wss://`.** Either point the `tls` config at real PEM files to terminate
+TLS in-process, or run plain HTTP behind a TLS-terminating reverse proxy. The
+client auto-selects `ws://` vs `wss://` from the page's protocol, so no client
+change is needed.
+
+**Observability.** Two unauthenticated HTTP endpoints support health checks and
+monitoring:
+
+- `GET /health` → `200 ok` (liveness probe).
+- `GET /metrics` → JSON snapshot of `active_games`, `players_in_rooms`,
+  `tracked_sessions`, and `uptime_ms`.
+
+Key lifecycle events (game created/started/over) are logged via `logger` at
+`info` level.
+
+---
+
 ## Status
 
 The game is built in incremental vertical slices (tracked in
@@ -250,6 +312,8 @@ implemented and playable end-to-end:
 - ✅ Fog of war, active/passive sonar, ink clouds, and spectator mode
 - ✅ The Black Box objective: hidden data nodes, data theft, the moving
   extraction zone, extraction announcements, and win/lose end-of-match flow
+- ✅ Production release, Docker image, optional in-process TLS, `/health` and
+  `/metrics` endpoints, and hot-tunable gameplay config
 
 On the roadmap:
 

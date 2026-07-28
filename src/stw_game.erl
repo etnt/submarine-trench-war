@@ -25,6 +25,9 @@
 -ifdef(TEST).
 %% Pure objective helpers exposed for unit testing.
 -export([resolve_data/3, extraction_path/1]).
+%% Config helpers exposed so tests can verify env overrides.
+-export([base_hand/0, min_hand/0, win_data/0, ping_timer_ms/0,
+         collapse_interval/0]).
 -endif.
 
 %% Colourblind-safe fleet palette (Okabe-Ito derived): sky blue, orange,
@@ -71,6 +74,27 @@
     timer_ref :: reference() | undefined,
     timer_ends :: integer() | undefined
 }).
+
+%% --- Tunables ---------------------------------------------------------
+%% Gameplay knobs are read from the `stw` application environment at use
+%% time, each falling back to the compiled-in default. This lets playtests
+%% iterate on balance via config/sys.config (or `application:set_env/3`)
+%% without recompiling. See config/sys.config for the documented keys.
+
+-spec base_hand() -> pos_integer().
+base_hand() -> application:get_env(stw, base_hand, ?BASE_HAND).
+
+-spec min_hand() -> pos_integer().
+min_hand() -> application:get_env(stw, min_hand, ?MIN_HAND).
+
+-spec win_data() -> pos_integer().
+win_data() -> application:get_env(stw, win_data, ?WIN_DATA).
+
+-spec ping_timer_ms() -> pos_integer().
+ping_timer_ms() -> application:get_env(stw, ping_timer_ms, ?PING_TIMER_MS).
+
+-spec collapse_interval() -> pos_integer().
+collapse_interval() -> application:get_env(stw, collapse_interval, ?COLLAPSE_INTERVAL).
 
 %% --- API --------------------------------------------------------------
 
@@ -125,6 +149,7 @@ set_sonar_mode(GamePid, PlayerId, Mode) ->
 
 init({RoomCode, Opts}) ->
     MapId = opt(map_id, Opts, <<"trench_alpha">>),
+    logger:info("stw game ~s created (map=~s)", [RoomCode, MapId]),
     {ok, #state{room_code = RoomCode,
                 map_id = MapId,
                 max_players = opt(max_players, Opts, 4),
@@ -179,6 +204,8 @@ handle_call({start_game, PlayerId}, _From, S) ->
                          epath = EPath, eidx = 0, extraction = hd(EPath),
                          revealed = [], winner = undefined,
                          timer_ref = undefined, timer_ends = undefined},
+            logger:info("stw game ~s started with ~p players",
+                        [S#state.room_code, map_size(S#state.players)]),
             broadcast(S1, <<"game_started">>, game_started_payload(S1)),
             S2 = deal_and_announce(S1),
             {reply, ok, S2};
@@ -375,7 +402,7 @@ resolving_payload(S, AutoFilled) ->
       <<"auto_filled">> => AutoFilled}.
 
 timer_payload(S) ->
-    #{<<"duration_ms">> => ?PING_TIMER_MS,
+    #{<<"duration_ms">> => ping_timer_ms(),
       <<"ends_at">> => S#state.timer_ends}.
 
 locked_payload(S, PlayerId) ->
@@ -399,7 +426,7 @@ player_view(S, PlayerId) ->
              <<"ink_clouds">> => ink_json(S),
              <<"decoys">> => decoys_for(S, PlayerId),
              <<"extraction">> => coord_json(S#state.extraction),
-             <<"win_data">> => ?WIN_DATA},
+             <<"win_data">> => win_data()},
     case is_spectator(S, PlayerId) of
         true ->
             Base#{<<"spectator">> => true,
@@ -595,7 +622,7 @@ deal_one_hand(Round, Hull) ->
 %% Full hull => full hand; each point of damage removes one card, never
 %% dropping below the register count (a damaged nav-computer offers less).
 hand_size(Hull) ->
-    max(?MIN_HAND, ?BASE_HAND - (?START_HULL - Hull)).
+    max(min_hand(), base_hand() - (?START_HULL - Hull)).
 
 card_id(Round, Idx) ->
     <<"r", (integer_to_binary(Round))/binary,
@@ -770,7 +797,7 @@ advance_extraction(#state{epath = Path, eidx = Idx}) ->
 %% the coords that collapsed (empty when it is not a collapse round or no safe
 %% candidate exists).
 maybe_collapse(S, Round) ->
-    case Round rem ?COLLAPSE_INTERVAL =:= 0 of
+    case Round rem collapse_interval() =:= 0 of
         false -> {S#state.board, []};
         true -> do_collapse(S, ?COLLAPSE_TILES, S#state.board, [])
     end.
@@ -928,6 +955,8 @@ announce_leaders(S, Leaders) ->
 
 %% End the match: announce the winner and stop dealing rounds.
 end_match(S, Winner, Reason, RunnerUp) ->
+    logger:info("stw game ~s over (winner=~p reason=~s round=~p)",
+                [S#state.room_code, Winner, Reason, S#state.round]),
     S1 = S#state{phase = finished, winner = Winner,
                  programs = #{}, locked = [], submitted = #{},
                  revealed = alive_ids(S),
@@ -985,8 +1014,8 @@ reveal_sonar_hits(S, Phases) ->
 %% Start the 30s Ping Timer on the first lock of the round.
 maybe_start_timer(S) when S#state.timer_ref =/= undefined -> S;
 maybe_start_timer(S) ->
-    Ref = erlang:send_after(?PING_TIMER_MS, self(), ping_timeout),
-    Ends = now_ms() + ?PING_TIMER_MS,
+    Ref = erlang:send_after(ping_timer_ms(), self(), ping_timeout),
+    Ends = now_ms() + ping_timer_ms(),
     S1 = S#state{timer_ref = Ref, timer_ends = Ends},
     broadcast(S1, <<"timer_started">>, timer_payload(S1)),
     S1.

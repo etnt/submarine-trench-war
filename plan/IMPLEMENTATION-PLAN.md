@@ -226,12 +226,18 @@ Goal: confidence for real multiplayer sessions.
 
 Goal: get it in front of players and iterate.
 
-* [ ] Package a release (`rebar3 release`) with runtime config.
-* [ ] Containerize (Dockerfile) for reproducible deployment.
-* [ ] Host with a public WebSocket endpoint (TLS / `wss://`).
-* [ ] Basic metrics/logging (active games, players, errors).
-* [ ] Run structured playtests; collect balance feedback.
-* [ ] Iterate on tuning: hand sizes, timers, damage, map layouts.
+* [x] Package a release (`rebar3 release`) with runtime config.
+* [x] Containerize (Dockerfile) for reproducible deployment.
+* [x] Host with a public WebSocket endpoint (TLS / `wss://`). *(In-process
+  TLS listener wired and config-documented; the client auto-selects
+  `wss://`. Terminating certs and public DNS is a manual hosting step.)*
+* [x] Basic metrics/logging (active games, players, errors). *(`/health` +
+  `/metrics` endpoints, lobby stats, lifecycle logging.)*
+* [ ] Run structured playtests; collect balance feedback. *(Manual —
+  tunables are now config-driven to support this.)*
+* [x] Iterate on tuning: hand sizes, timers, damage, map layouts.
+  *(Hand sizes, win threshold, ping timer, and collapse interval are
+  hot-tunable via `sys.config`/app env without recompiling.)*
 
 **Milestone:** Publicly playable and improving from real feedback.
 

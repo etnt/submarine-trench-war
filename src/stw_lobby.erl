@@ -17,6 +17,7 @@
 
 -export([start_link/0]).
 -export([hello/2, create_game/2, join_room/2, lookup_room/1]).
+-export([stats/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(SERVER, ?MODULE).
@@ -59,6 +60,13 @@ join_room(Token, RoomCode) ->
 lookup_room(RoomCode) ->
     gen_server:call(?SERVER, {lookup_room, RoomCode}).
 
+%% @doc Lightweight observability snapshot for the /metrics endpoint.
+%% Reports live rooms, tracked sessions, and how many sessions are
+%% currently attached to a live room. Cheap (no per-game calls).
+-spec stats() -> #{binary() => non_neg_integer()}.
+stats() ->
+    gen_server:call(?SERVER, stats).
+
 %% --- gen_server -------------------------------------------------------
 
 init([]) ->
@@ -100,6 +108,22 @@ handle_call({join_room, Token, RoomCode}, _From, S) ->
     end;
 handle_call({lookup_room, RoomCode}, _From, S) ->
     {reply, maps:find(RoomCode, S#state.rooms), S};
+handle_call(stats, _From, S) ->
+    Rooms = S#state.rooms,
+    InRoom = maps:fold(
+               fun(_Token, Sess, Acc) ->
+                   case maps:get(room_code, Sess, undefined) of
+                       undefined -> Acc;
+                       RC -> case maps:is_key(RC, Rooms) of
+                                 true -> Acc + 1;
+                                 false -> Acc
+                             end
+                   end
+               end, 0, S#state.sessions),
+    Stats = #{<<"active_games">> => maps:size(Rooms),
+              <<"players_in_rooms">> => InRoom,
+              <<"tracked_sessions">> => maps:size(S#state.sessions)},
+    {reply, Stats, S};
 handle_call(_Req, _From, S) ->
     {reply, {error, unknown_request}, S}.
 

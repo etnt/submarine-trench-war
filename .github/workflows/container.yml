@@ -1,0 +1,62 @@
+name: Build container image
+
+# Build and publish a Podman image to the GitHub Container Registry (GHCR)
+# whenever a version tag is pushed, e.g. `git tag v0.1.0 && git push --tags`.
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Erlang/OTP and rebar3
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          rebar3-version: "3.24.0"
+
+      - name: Run the test suite
+        run: rebar3 eunit
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      # Lowercase the owner/repo so it is a valid GHCR image name even if
+      # the GitHub account has uppercase letters.
+      - name: Compute image name and tag
+        id: meta
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="${GITHUB_REF_NAME}"          # e.g. v0.1.0
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build image
+        run: |
+          podman build \
+            --tag "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}" \
+            --tag "${{ steps.meta.outputs.image }}:latest" \
+            .
+
+      - name: Push image
+        run: |
+          podman push "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}"
+          podman push "${{ steps.meta.outputs.image }}:latest"

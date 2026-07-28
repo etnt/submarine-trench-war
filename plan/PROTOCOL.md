@@ -10,6 +10,32 @@ the server validates them and broadcasts **authoritative state and events**.
 * Payload format: UTF-8 JSON, one JSON object per WebSocket frame.
 * The server never trusts client-supplied game state — only intents.
 
+## HTTP endpoints (non-WebSocket)
+
+Alongside the static client and the `/ws` upgrade, the server exposes two
+unauthenticated operational endpoints for liveness checks and monitoring:
+
+| Method & path | Response | Purpose |
+| ------------- | -------- | ------- |
+| `GET /health`  | `200` `text/plain` body `ok` | Liveness/readiness probe for load balancers and orchestrators. |
+| `GET /metrics` | `200` `application/json` | Observability snapshot (see below). |
+
+`/metrics` returns a flat JSON object, for example:
+
+```json
+{
+  "status": "ok",
+  "uptime_ms": 4297,
+  "active_games": 2,
+  "players_in_rooms": 5,
+  "tracked_sessions": 7
+}
+```
+
+The snapshot is cheap (no per-game calls) and degrades gracefully — if the
+lobby is momentarily unavailable it still returns `status: "ok"` with zeroed
+counters rather than failing the request.
+
 ## Message Envelope
 
 Every message (both directions) shares a common envelope:

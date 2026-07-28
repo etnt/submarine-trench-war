@@ -1,0 +1,16 @@
+# Build artifacts and local state that must never enter the image context.
+_build/
+.git/
+.gitignore
+*.beam
+erl_crash.dump
+rebar3.crashdump
+
+# Docs and planning — not needed to build or run the release.
+plan/
+*.md
+LICENSE
+
+# Editor / OS noise
+.DS_Store
+.vscode/
