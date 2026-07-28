@@ -211,12 +211,12 @@ Goal: make it feel good to play.
 
 Goal: confidence for real multiplayer sessions.
 
-* [ ] Unit tests for the deterministic resolution engine (seeded scenarios).
-* [ ] Property-based tests for movement/collision invariants.
-* [ ] Integration tests for full round flow across multiple sessions.
-* [ ] Load test with concurrent games and players.
-* [ ] Reconnection and timeout robustness testing.
-* [ ] Validate the server is authoritative (client cannot cheat state).
+* [x] Unit tests for the deterministic resolution engine (seeded scenarios).
+* [x] Property-based tests for movement/collision invariants.
+* [x] Integration tests for full round flow across multiple sessions.
+* [x] Load test with concurrent games and players.
+* [x] Reconnection and timeout robustness testing.
+* [x] Validate the server is authoritative (client cannot cheat state).
 
 **Milestone:** Stable, tested multiplayer suitable for playtesting.
 
