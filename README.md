@@ -43,8 +43,8 @@ Once the server is up:
 
 **Play**
 
-1. Enter a name. One player **creates** a room and shares the room code; the
-   others **join** with it.
+1. Enter a name. One player **creates** a room (optionally picking one of the
+   trench maps) and shares the room code; the others **join** with it.
 2. Everyone clicks **Ready Up**. The host then clicks **Start**.
 3. Program your registers each round and **Lock In** (see below).
 
@@ -68,8 +68,8 @@ Each round is a plan-then-watch cycle:
    every sub acts simultaneously, then collisions, weapons, currents, and
    hazards resolve.
 5. **Replay.** The client animates the whole round — subs sliding, torpedoes
-   streaking, explosions blooming — so you can see exactly how your plan met
-   everyone else's.
+   streaking, explosions blooming, with sonar and impact audio — so you can see
+   exactly how your plan met everyone else's.
 
 Locking in with **no cards** is a valid pass: you hold position.
 
@@ -133,6 +133,10 @@ to combat and stealth:
   in a fixed direction, and **turbulence** rotates a sub 90°. Plan around the
   water, not just the walls.
 - **Thermal vents** — force Deep → Shallow on entry.
+- **Trench collapse** — every few rounds the trench caves in, turning a random
+  section to solid rock (never one that would trap a submarine or block every
+  route). The playable space shrinks as the match wears on, squeezing everyone
+  together.
 
 Every hit chips your hull; reach zero and your submarine becomes a drifting wreck
 that still blocks the trench but takes no further orders.
@@ -312,13 +316,16 @@ implemented and playable end-to-end:
 - ✅ Fog of war, active/passive sonar, ink clouds, and spectator mode
 - ✅ The Black Box objective: hidden data nodes, data theft, the moving
   extraction zone, extraction announcements, and win/lose end-of-match flow
+- ✅ Dynamic maps: trench-collapse events, multiple trench layouts, and host
+  map selection
+- ✅ Audio (Web Audio sonar, torpedo, and impact cues) and UX polish
 - ✅ Production release, Docker image, optional in-process TLS, `/health` and
   `/metrics` endpoints, and hot-tunable gameplay config
 
 On the roadmap:
 
-- ⏳ Trench collapse events and additional tactical cards (Decoy, EMP)
-- ⏳ Scoring refinements and audio
+- ⏳ Additional tactical cards (Decoy, EMP)
+- ⏳ Scoring refinements
 
 ---
 
