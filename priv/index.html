@@ -284,6 +284,8 @@
     /* richer fleet status rows */
     ul.players li.pdead { opacity: 0.55; }
     ul.players li.pme { box-shadow: inset 0 0 0 1px rgba(255,255,255,0.18); }
+    ul.players li.pfog { opacity: 0.62; }
+    .pill.fog { color: var(--muted); border-style: dashed; }
     .swatch.tag {
       display: inline-flex; align-items: center; justify-content: center;
       width: 16px; height: 16px; border-radius: 4px;
@@ -1116,37 +1118,54 @@
 
     function renderGamePlayers(p) {
       el.gamePlayers.innerHTML = "";
-      (p.players || []).forEach((pl, i) => {
+      // Live stats for players currently in contact (self + visible enemies).
+      const liveById = {};
+      (p.players || []).forEach((pl) => { liveById[pl.player_id] = pl; });
+      // Persistent scoreboard: list every seated player from the unfogged
+      // game_started roster, overlaying live stats only where we have contact.
+      // This keeps opponents — human or bot — in the list even while fog hides
+      // them, without revealing their position or stats.
+      let ids = Object.keys(state.roster);
+      if (!ids.length) ids = (p.players || []).map((pl) => pl.player_id);
+      ids.forEach((id, i) => {
+        const info = state.roster[id] || {};
+        const live = liveById[id];
+        const contact = !!live;
         const li = document.createElement("li");
-        const dead = pl.alive === false;
-        const me = pl.player_id === state.playerId;
+        const dead = contact && live.alive === false;
+        const me = id === state.playerId;
         if (dead) li.classList.add("pdead");
         if (me) li.classList.add("pme");
+        if (!contact && !me) li.classList.add("pfog");
 
         // colour swatch doubles as a shape/letter tag (a second, non-colour
         // channel) so colourblind players can still tell fleets apart.
         const sw = document.createElement("span");
         sw.className = "swatch tag";
-        if (pl.color) sw.style.background = pl.color;
-        sw.textContent = (pl.display_name || pl.player_id || "?")
-          .trim().charAt(0).toUpperCase() || String(i + 1);
+        const color = (contact && live.color) || info.color;
+        if (color) sw.style.background = color;
+        const dname = (contact && live.display_name) || info.display_name || id;
+        sw.textContent = (dname || "?").trim().charAt(0).toUpperCase()
+          || String(i + 1);
         li.appendChild(sw);
 
         const name = document.createElement("span");
         name.className = "pname";
-        name.textContent = (pl.display_name || pl.player_id) + (me ? " (you)" : "");
+        name.textContent = dname + (me ? " (you)" : "");
         li.appendChild(name);
 
         const stat = document.createElement("span");
         stat.className = "pstat";
         if (dead) {
           stat.appendChild(pill("", "destroyed"));
-        } else {
-          if (typeof pl.data_collected === "number") {
-            stat.appendChild(pill("data", "\u25c8 " + pl.data_collected));
+        } else if (contact) {
+          if (typeof live.data_collected === "number") {
+            stat.appendChild(pill("data", "\u25c8 " + live.data_collected));
           }
-          if (pl.depth === "deep") stat.appendChild(pill("deep", "\u2b07 deep"));
-          if (typeof pl.hull === "number") stat.appendChild(hullBar(pl.hull));
+          if (live.depth === "deep") stat.appendChild(pill("deep", "\u2b07 deep"));
+          if (typeof live.hull === "number") stat.appendChild(hullBar(live.hull));
+        } else {
+          stat.appendChild(pill("fog", "no contact"));
         }
         li.appendChild(stat);
         el.gamePlayers.appendChild(li);
