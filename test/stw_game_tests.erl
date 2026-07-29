@@ -24,7 +24,10 @@ lobby_flow_test_() ->
           fun active_sonar_reveals/0,
           fun objectives_in_game_state/0,
           fun map_selection_uses_named_board/0,
-          fun map_collapse_after_interval/0 ]
+          fun map_collapse_after_interval/0,
+          fun host_adds_bot/0,
+          fun bot_add_requires_host_and_room/0,
+          fun bot_plays_and_resolves/0 ]
     end}.
 
 setup() ->
@@ -387,6 +390,72 @@ extraction_path_test() ->
     Path = stw_game:extraction_path(stw_board:default()),
     ?assert(length(Path) >= 1),
     [?assertEqual(1, Y) || {_X, Y} <- Path].
+
+%% The host can add a computer opponent; it appears in the lobby as an
+%% auto-ready bot player and counts toward the roster.
+host_adds_bot() ->
+    flush(),
+    {P1, T1, undefined} = stw_lobby:hello(undefined, <<"Skip">>),
+    {ok, _Room, GamePid} = stw_lobby:create_game(T1, #{}),
+    {ok, true} = stw_game:join(GamePid, P1, <<"Skip">>, self()),
+    _ = expect_push(<<"lobby_state">>),
+    {ok, BotId} = stw_game:add_bot(GamePid, P1),
+    L = expect_push(<<"lobby_state">>),
+    Players = maps:get(<<"players">>, L),
+    ?assertEqual(2, length(Players)),
+    [Bot] = [Pl || Pl <- Players,
+                   maps:get(<<"player_id">>, Pl) =:= BotId],
+    ?assertEqual(true, maps:get(<<"bot">>, Bot)),
+    ?assertEqual(true, maps:get(<<"ready">>, Bot)),
+    ?assertEqual(true, maps:get(<<"connected">>, Bot)),
+    %% the human is still the host, not the bot
+    ?assertEqual(P1, maps:get(<<"host_id">>, L)).
+
+%% Only the host may add bots, and not once the room is full.
+bot_add_requires_host_and_room() ->
+    flush(),
+    {P1, T1, undefined} = stw_lobby:hello(undefined, <<"Boss">>),
+    {ok, _Room, GamePid} = stw_lobby:create_game(T1, #{max_players => 2}),
+    {ok, true} = stw_game:join(GamePid, P1, <<"Boss">>, self()),
+    _ = expect_push(<<"lobby_state">>),
+    %% a non-host (not even seated) cannot add a bot
+    ?assertEqual({error, not_host},
+                 stw_game:add_bot(GamePid, <<"stranger">>)),
+    %% host fills the last slot with a bot, then the room is full
+    {ok, _Bot} = stw_game:add_bot(GamePid, P1),
+    _ = expect_push(<<"lobby_state">>),
+    ?assertEqual({error, room_full}, stw_game:add_bot(GamePid, P1)).
+
+%% A bot programs and locks on its own, so a round resolves once the human
+%% also locks, and the match proceeds to the next round.
+bot_plays_and_resolves() ->
+    Prev = application:get_env(stw, bot_delay_ms),
+    application:set_env(stw, bot_delay_ms, 0),
+    try
+        flush(),
+        {P1, T1, undefined} = stw_lobby:hello(undefined, <<"Solo">>),
+        {ok, _Room, GamePid} = stw_lobby:create_game(T1, #{}),
+        {ok, true} = stw_game:join(GamePid, P1, <<"Solo">>, self()),
+        {ok, _Bot} = stw_game:add_bot(GamePid, P1),
+        flush(),
+        ok = stw_game:start_game(GamePid, P1),
+        _ = expect_push(<<"round_started">>),
+        Prog1 = draft(deal_for(P1)),
+        ok = stw_game:program_registers(GamePid, P1, Prog1),
+        ok = stw_game:lock_registers(GamePid, P1),
+        %% both the human and the bot have locked -> the round resolves
+        RR = expect_push(<<"round_result">>),
+        ?assertEqual(1, maps:get(<<"round">>, RR)),
+        ?assertEqual(5, length(maps:get(<<"phases">>, RR))),
+        %% a fresh round is announced, proving the bot keeps playing
+        RS2 = expect_push(<<"round_started">>),
+        ?assertEqual(2, maps:get(<<"round">>, RS2))
+    after
+        case Prev of
+            undefined -> application:unset_env(stw, bot_delay_ms);
+            {ok, V} -> application:set_env(stw, bot_delay_ms, V)
+        end
+    end.
 
 sub(X, Y, Data) ->
     #{x => X, y => Y, facing => <<"N">>, depth => <<"shallow">>,

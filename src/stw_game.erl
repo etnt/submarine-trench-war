@@ -19,6 +19,7 @@
 
 -export([start_link/2]).
 -export([join/4, reconnect/3, leave/2, set_ready/3, start_game/2]).
+-export([add_bot/2]).
 -export([program_registers/3, lock_registers/2, set_sonar_mode/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
@@ -48,6 +49,10 @@
 %% moving and discourages camping). COLLAPSE_TILES sections cave per event.
 -define(COLLAPSE_INTERVAL, 3).
 -define(COLLAPSE_TILES, 1).
+%% How long a bot "thinks" before locking its program each round. Kept short
+%% enough to feel responsive but long enough that a human sees the bot move
+%% deliberately rather than instantly.
+-define(BOT_DELAY_MS, 1200).
 
 -record(state, {
     room_code :: binary(),
@@ -100,6 +105,9 @@ ping_timer_ms() -> application:get_env(stw, ping_timer_ms, ?PING_TIMER_MS).
 -spec collapse_interval() -> pos_integer().
 collapse_interval() -> application:get_env(stw, collapse_interval, ?COLLAPSE_INTERVAL).
 
+-spec bot_delay_ms() -> non_neg_integer().
+bot_delay_ms() -> application:get_env(stw, bot_delay_ms, ?BOT_DELAY_MS).
+
 %% --- API --------------------------------------------------------------
 
 start_link(RoomCode, Opts) ->
@@ -129,6 +137,15 @@ set_ready(GamePid, PlayerId, Ready) ->
 -spec start_game(pid(), binary()) -> ok | {error, not_host}.
 start_game(GamePid, PlayerId) ->
     gen_server:call(GamePid, {start_game, PlayerId}).
+
+%% @doc Add a computer-controlled opponent to the room. Only the host may do
+%% so, only while in the lobby, and only if the room is not full. Bots play
+%% as ordinary submarines: they are seated at game start and program/lock
+%% their own registers each round.
+-spec add_bot(pid(), binary()) ->
+    {ok, binary()} | {error, not_host | not_lobby | room_full}.
+add_bot(GamePid, RequesterId) ->
+    gen_server:call(GamePid, {add_bot, RequesterId}).
 
 %% @doc Submit an ordered list of 5 card IDs (drawn from this round's dealt
 %% hand) to program into the registers.
@@ -224,12 +241,29 @@ handle_call({start_game, PlayerId}, _From, S) ->
         false ->
             {reply, {error, not_host}, S}
     end;
+handle_call({add_bot, RequesterId}, _From, S) ->
+    case RequesterId =:= S#state.host_id of
+        false ->
+            {reply, {error, not_host}, S};
+        true when S#state.phase =/= lobby ->
+            {reply, {error, not_lobby}, S};
+        true ->
+            case map_size(S#state.players) >= S#state.max_players of
+                true ->
+                    {reply, {error, room_full}, S};
+                false ->
+                    {BotId, Name} = new_bot_identity(S),
+                    S1 = add_bot_player(BotId, Name, S),
+                    logger:info("stw game ~s added bot ~s (~s)",
+                                [S#state.room_code, BotId, Name]),
+                    broadcast_lobby(S1),
+                    {reply, {ok, BotId}, S1}
+            end
+    end;
 handle_call({program, PlayerId, Cards}, _From, S) ->
     case validate_program(PlayerId, Cards, S) of
         {ok, Kinds} ->
-            S1 = S#state{programs = maps:put(PlayerId, Kinds, S#state.programs),
-                         submitted = maps:put(PlayerId, Cards, S#state.submitted)},
-            {reply, ok, S1};
+            {reply, ok, do_program(PlayerId, Kinds, Cards, S)};
         {error, _} = Err ->
             {reply, Err, S}
     end;
@@ -260,9 +294,7 @@ handle_call({lock, PlayerId}, _From, S) ->
                 false ->
                     {reply, {error, no_program}, S};
                 true ->
-                    Locked = lists:usort([PlayerId | S#state.locked]),
-                    S1 = maybe_start_timer(S#state{locked = Locked}),
-                    broadcast(S1, <<"player_locked">>, locked_payload(S1, PlayerId)),
+                    S1 = do_lock(PlayerId, S),
                     {reply, ok, maybe_resolve(S1)}
             end
     end;
@@ -271,10 +303,11 @@ handle_call(_Req, _From, S) ->
 
 handle_cast({leave, PlayerId}, S) ->
     S1 = remove_player(PlayerId, S),
-    case map_size(S1#state.players) of
-        0 ->
+    case map_size(S1#state.players) =:= 0 orelse not any_human(S1) of
+        true ->
+            %% Room empty, or only bots left with no human to play against.
             {stop, normal, S1};
-        _ ->
+        false ->
             broadcast_lobby(S1),
             {noreply, S1}
     end;
@@ -300,6 +333,15 @@ handle_info(ping_timeout, S) ->
         true ->
             {noreply, resolve_on_timeout(S, Unlocked)}
     end;
+handle_info({bot_turn, BotId, Round}, S) ->
+    Active = S#state.phase =:= playing
+        andalso S#state.round =:= Round
+        andalso lists:member(BotId, seated_ids(S))
+        andalso not lists:member(BotId, S#state.locked),
+    case Active of
+        true -> {noreply, bot_take_turn(BotId, S)};
+        false -> {noreply, S}
+    end;
 handle_info(_Info, S) ->
     {noreply, S}.
 
@@ -319,6 +361,45 @@ add_player(PlayerId, DisplayName, WsPid, S) ->
     S#state{players = maps:put(PlayerId, Player, S#state.players),
             join_order = S#state.join_order ++ [PlayerId],
             host_id = Host}.
+
+%% Seat a bot as an ordinary player. Bots have no connection pid (pushes to
+%% `undefined` are safely dropped) and no monitor; they are auto-ready so the
+%% host can start immediately, and carry a `bot` flag for the UI and for
+%% turn scheduling.
+add_bot_player(BotId, Name, S) ->
+    Player = #{display_name => Name,
+               ready => true,
+               ws_pid => undefined,
+               mon => undefined,
+               connected => true,
+               bot => true},
+    S#state{players = maps:put(BotId, Player, S#state.players),
+            join_order = S#state.join_order ++ [BotId]}.
+
+%% A fresh, unique bot id and a friendly display name based on how many bots
+%% are already present.
+new_bot_identity(S) ->
+    N = length([Id || Id <- maps:keys(S#state.players), is_bot(Id, S)]),
+    Id = <<"bot_", (integer_to_binary(erlang:unique_integer([positive])))/binary>>,
+    {Id, bot_name(N + 1)}.
+
+bot_name(N) ->
+    Names = [<<"Bot Alpha">>, <<"Bot Bravo">>, <<"Bot Charlie">>,
+             <<"Bot Delta">>, <<"Bot Echo">>, <<"Bot Foxtrot">>],
+    case N =< length(Names) of
+        true -> lists:nth(N, Names);
+        false -> <<"Bot ", (integer_to_binary(N))/binary>>
+    end.
+
+is_bot(Id, S) ->
+    case maps:find(Id, S#state.players) of
+        {ok, P} -> maps:get(bot, P, false);
+        error -> false
+    end.
+
+%% True if at least one non-bot player remains in the room.
+any_human(S) ->
+    lists:any(fun(Id) -> not is_bot(Id, S) end, maps:keys(S#state.players)).
 
 %% Bind (or re-bind) a player's connection pid, replacing any old monitor.
 attach_ws(PlayerId, WsPid, S) ->
@@ -385,6 +466,7 @@ lobby_payload(S) ->
       <<"map_id">> => S#state.map_id,
       <<"host_id">> => nullify(S#state.host_id),
       <<"phase">> => atom_to_binary(S#state.phase),
+      <<"max_players">> => S#state.max_players,
       <<"players">> => [player_json(Id, maps:get(Id, S#state.players))
                         || Id <- S#state.join_order]}.
 
@@ -392,7 +474,8 @@ player_json(Id, P) ->
     #{<<"player_id">> => Id,
       <<"display_name">> => maps:get(display_name, P),
       <<"ready">> => maps:get(ready, P),
-      <<"connected">> => maps:get(connected, P)}.
+      <<"connected">> => maps:get(connected, P),
+      <<"bot">> => maps:get(bot, P, false)}.
 
 game_started_payload(S) ->
     #{<<"map_id">> => S#state.map_id,
@@ -610,14 +693,189 @@ coord_json({X, Y}) -> #{<<"x">> => X, <<"y">> => Y}.
 
 %% --- round resolution -------------------------------------------------
 
-%% Deal fresh hands, announce the round, and send each player their private
-%% hand. Called at game start and after every resolution.
+%% Record a validated program (ordered card kinds + the raw submitted ids)
+%% for a player. Shared by the human `program` handler and the bot.
+do_program(PlayerId, Kinds, Ids, S) ->
+    S#state{programs = maps:put(PlayerId, Kinds, S#state.programs),
+            submitted = maps:put(PlayerId, Ids, S#state.submitted)}.
+
+%% Mark a player locked, (re)start the resolution timer, and announce it.
+%% Shared by the human `lock` handler and the bot. Caller runs maybe_resolve.
+do_lock(PlayerId, S) ->
+    Locked = lists:usort([PlayerId | S#state.locked]),
+    S1 = maybe_start_timer(S#state{locked = Locked}),
+    broadcast(S1, <<"player_locked">>, locked_payload(S1, PlayerId)),
+    S1.
+
+%% --- bot opponent -----------------------------------------------------
+
+%% After each round is dealt, schedule a delayed turn for every seated bot so
+%% it programs and locks on its own. The delay gives the match a natural
+%% cadence and lets a human watch the bot commit rather than snapping shut.
+schedule_bot_turns(S) ->
+    Round = S#state.round,
+    lists:foreach(
+      fun(Id) ->
+          case is_bot(Id, S) of
+              true -> erlang:send_after(bot_delay_ms(), self(),
+                                        {bot_turn, Id, Round});
+              false -> ok
+          end
+      end, seated_ids(S)).
+
+%% Choose and lock a program for a bot, then attempt resolution.
+bot_take_turn(BotId, S) ->
+    Hand = maps:get(BotId, S#state.hands, []),
+    Ids = choose_bot_program(Hand, S, BotId),
+    {ok, Kinds} = validate_program(BotId, Ids, S),
+    S1 = do_program(BotId, Kinds, Ids, S),
+    maybe_resolve(do_lock(BotId, S1)).
+
+%% Pick an ordered list of distinct card ids (at most ?REGISTERS) from the
+%% bot's hand. Heuristic: fire a torpedo if an enemy is dead ahead, turn to
+%% face the nearest objective, then push forward, filling any spare slots
+%% with whatever remains.
+choose_bot_program(Hand, S, BotId) ->
+    case maps:find(BotId, S#state.subs) of
+        {ok, Sub} -> plan_bot(Hand, S, BotId, Sub);
+        error -> []
+    end.
+
+plan_bot(Hand, S, BotId, Sub) ->
+    Pos = {maps:get(x, Sub), maps:get(y, Sub)},
+    F = maps:get(facing, Sub),
+    Depth = maps:get(depth, Sub),
+    Data = maps:get(data, Sub),
+    ByKind = group_by_kind(Hand),
+    Target = bot_target(S, Pos, Data),
+    Desired = case Target of
+                  undefined -> F;
+                  T -> facing_toward(Pos, T, F)
+              end,
+    St0 = {[], ByKind},
+    %% 1) Torpedo if an enemy is on our line of fire.
+    St1 = case enemy_ahead(S, BotId, Pos, F, Depth) of
+              true -> take_kind(<<"torpedo">>, St0);
+              false -> St0
+          end,
+    %% 2) Turn toward the objective if we are not already facing it.
+    St2 = case F =:= Desired of
+              true -> St1;
+              false -> take_kind(turn_card(F, Desired), St1)
+          end,
+    %% 3) Advance (flank first for reach), then fill remaining slots.
+    St3 = take_kind(<<"ahead_flank">>, St2),
+    St4 = take_kind(<<"ahead_standard">>, St3),
+    St5 = fill_rest(St4),
+    {IdsRev, _} = St5,
+    lists:sublist(lists:reverse(IdsRev), ?REGISTERS).
+
+%% #{kind => [id, ...]} for the cards in a hand.
+group_by_kind(Hand) ->
+    lists:foldl(
+      fun(#{<<"id">> := Id, <<"kind">> := K}, M) ->
+          maps:update_with(K, fun(L) -> [Id | L] end, [Id], M)
+      end, #{}, Hand).
+
+%% Pop one card of the given kind (if any and there is room) onto the plan.
+take_kind(none, St) -> St;
+take_kind(Kind, {Acc, ByKind} = St) ->
+    case length(Acc) >= ?REGISTERS of
+        true -> St;
+        false ->
+            case maps:get(Kind, ByKind, []) of
+                [Id | Rest] -> {[Id | Acc], maps:put(Kind, Rest, ByKind)};
+                [] -> St
+            end
+    end.
+
+%% Fill any spare register slots with leftover cards in a sensible priority.
+fill_rest({Acc, ByKind}) ->
+    Remaining = ?REGISTERS - length(Acc),
+    case Remaining =< 0 of
+        true -> {Acc, ByKind};
+        false ->
+            Order = [<<"ahead_standard">>, <<"ahead_flank">>, <<"reverse">>,
+                     <<"port_bank">>, <<"starboard_bank">>, <<"sonar_ping">>,
+                     <<"dive">>, <<"surface">>, <<"depth_charge">>,
+                     <<"torpedo">>, <<"ink_cloud">>, <<"decoy_torpedo">>,
+                     <<"emp_burst">>],
+            Leftover = lists:flatmap(fun(K) -> maps:get(K, ByKind, []) end, Order),
+            Take = lists:sublist(Leftover, Remaining),
+            {lists:reverse(Take) ++ Acc, ByKind}
+    end.
+
+%% Nearest data node while we still need data, else the extraction zone.
+bot_target(S, Pos, Data) ->
+    case Data < win_data() andalso S#state.nodes =/= [] of
+        true -> nearest(Pos, S#state.nodes);
+        false -> S#state.extraction
+    end.
+
+nearest(_Pos, []) -> undefined;
+nearest({X, Y}, [First | Rest]) ->
+    element(2, lists:foldl(
+      fun({Cx, Cy} = C, {BestD, _} = Best) ->
+          D = abs(Cx - X) + abs(Cy - Y),
+          case D < BestD of true -> {D, C}; false -> Best end
+      end, {manhattan({X, Y}, First), First}, Rest)).
+
+manhattan({X, Y}, {Cx, Cy}) -> abs(Cx - X) + abs(Cy - Y).
+
+%% The cardinal facing that best points from Pos toward Target.
+facing_toward({X, Y}, {Tx, Ty}, Cur) ->
+    Dx = Tx - X, Dy = Ty - Y,
+    if
+        Dx =:= 0 andalso Dy =:= 0 -> Cur;
+        abs(Dx) >= abs(Dy), Dx > 0 -> <<"E">>;
+        abs(Dx) >= abs(Dy), Dx < 0 -> <<"W">>;
+        Dy > 0 -> <<"S">>;
+        true -> <<"N">>
+    end.
+
+%% Which single bank card rotates From toward To (90 degrees). A 180 turn is
+%% approximated with a single starboard bank (the next round finishes it).
+turn_card(From, To) ->
+    case (fidx(To) - fidx(From) + 4) rem 4 of
+        1 -> <<"starboard_bank">>;
+        3 -> <<"port_bank">>;
+        2 -> <<"starboard_bank">>;
+        _ -> none
+    end.
+
+fidx(<<"N">>) -> 0;
+fidx(<<"E">>) -> 1;
+fidx(<<"S">>) -> 2;
+fidx(<<"W">>) -> 3.
+
+fvec(<<"N">>) -> {0, -1};
+fvec(<<"S">>) -> {0, 1};
+fvec(<<"E">>) -> {1, 0};
+fvec(<<"W">>) -> {-1, 0}.
+
+%% True if any live enemy sub at our depth sits straight ahead within range.
+enemy_ahead(S, BotId, {X, Y}, F, Depth) ->
+    {Fdx, Fdy} = fvec(F),
+    lists:any(
+      fun({Id, Sub}) ->
+          Id =/= BotId
+              andalso maps:get(alive, Sub, true)
+              andalso maps:get(depth, Sub) =:= Depth
+              andalso on_ray(maps:get(x, Sub) - X, maps:get(y, Sub) - Y,
+                             Fdx, Fdy, 4)
+      end, maps:to_list(S#state.subs)).
+
+on_ray(Dx, Dy, 0, Fdy, Max) -> Dx =:= 0 andalso Dy * Fdy > 0 andalso abs(Dy) =< Max;
+on_ray(Dx, Dy, Fdx, 0, Max) -> Dy =:= 0 andalso Dx * Fdx > 0 andalso abs(Dx) =< Max.
+
+
 deal_and_announce(S) ->
     Hands = deal_hands(S),
     S1 = S#state{hands = Hands},
     broadcast(S1, <<"round_started">>, round_started_payload(S1)),
     lists:foreach(fun(Id) -> push_hand(S1, Id) end, seated_ids(S1)),
     broadcast_game_state(S1),
+    schedule_bot_turns(S1),
     S1.
 
 %% Build a hand per seated player, sized by that sub's remaining hull.

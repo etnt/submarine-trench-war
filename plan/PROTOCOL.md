@@ -165,6 +165,23 @@ Toggle ready state in the lobby.
 ### `start_game`
 Host-only request to start the match early.
 
+### `add_bot`
+Host-only request to add a computer-controlled opponent to the room. Empty
+payload. The bot joins as an ordinary player (auto-ready, no connection) and
+counts toward `max_players`; it is seated at game start and programs/locks its
+own registers each round. On success the server broadcasts an updated
+`lobby_state` in which the new player carries `"bot": true`.
+
+```json
+{
+  "type": "add_bot",
+  "payload": {}
+}
+```
+
+Errors: `not_host` if the sender is not the host; `not_lobby` if the match has
+already started; `room_full` if the room is at `max_players`.
+
 ### `program_registers`
 Working selection of 5 ordered cards for the round, given as **card IDs**
 drawn from this round's dealt hand (see `deal_hand`). May be sent multiple
@@ -259,13 +276,20 @@ Broadcast whenever lobby membership or readiness changes.
     "room_code": "REEF12",
     "map_id": "trench_alpha",
     "host_id": "p_ab12",
+    "max_players": 4,
     "players": [
-      { "player_id": "p_ab12", "display_name": "Nautilus", "ready": true },
-      { "player_id": "p_cd34", "display_name": "Kraken", "ready": false }
+      { "player_id": "p_ab12", "display_name": "Nautilus", "ready": true, "connected": true, "bot": false },
+      { "player_id": "p_cd34", "display_name": "Kraken", "ready": false, "connected": true, "bot": false },
+      { "player_id": "bot_7", "display_name": "Bot Alpha", "ready": true, "connected": true, "bot": true }
     ]
   }
 }
 ```
+
+Each player entry carries `ready`, `connected` (false while a human is
+temporarily disconnected), and `bot` (true for computer opponents). Bots are
+always `ready` and `connected`. `max_players` lets the client hide/disable the
+host's **Add Bot** control when the room is full.
 
 ### `game_started`
 Signals transition from lobby to match. Carries the static board and the

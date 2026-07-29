@@ -171,6 +171,7 @@
     .badge.host { background: #b8860b; color: #02090f; }
     .badge.ready { background: var(--ok); color: #02090f; }
     .badge.offline { background: #444; color: #aaa; }
+    .badge.bot { background: #6f42c1; color: #f4eefb; }
     .pname { flex: 1; }
     .swatch { width: 12px; height: 12px; border-radius: 3px; }
     canvas#board {
@@ -377,6 +378,7 @@
       <ul class="players" id="playerList"></ul>
       <div class="controls" style="margin-top: 12px;">
         <button id="btnReady">Ready Up</button>
+        <button id="btnAddBot" class="hidden">Add Bot</button>
         <button id="btnStart" class="primary hidden">Dive! (Start)</button>
         <button id="btnLeave">Leave</button>
       </div>
@@ -497,6 +499,7 @@
       btnCreate: $("btnCreate"), btnJoin: $("btnJoin"), mapSelect: $("mapSelect"),
       roomCode: $("roomCode"), playerList: $("playerList"),
       btnReady: $("btnReady"), btnStart: $("btnStart"), btnLeave: $("btnLeave"),
+      btnAddBot: $("btnAddBot"),
       gamePlayers: $("gamePlayers"), btnLeaveGame: $("btnLeaveGame"),
       homeToast: $("homeToast"), lobbyToast: $("lobbyToast"),
       canvas: $("board"), mapTip: $("mapTip"),
@@ -1094,8 +1097,9 @@
         name.textContent = pl.display_name;
         li.appendChild(name);
         if (pl.player_id === p.host_id) li.appendChild(badge("host", "HOST"));
+        if (pl.bot) li.appendChild(badge("bot", "BOT"));
         if (pl.ready) li.appendChild(badge("ready", "READY"));
-        if (!pl.connected) li.appendChild(badge("offline", "OFFLINE"));
+        if (!pl.bot && !pl.connected) li.appendChild(badge("offline", "OFFLINE"));
         el.playerList.appendChild(li);
       });
       el.btnReady.textContent = (me && me.ready) ? "Not Ready" : "Ready Up";
@@ -1104,6 +1108,10 @@
         players.length >= 2 && players.every((x) => x.ready || !x.connected);
       el.btnStart.classList.toggle("hidden", !state.isHost);
       el.btnStart.disabled = !(state.isHost && allReady);
+      // Host-only: add a computer opponent while there is room in the fleet.
+      const full = players.length >= (p.max_players || 4);
+      el.btnAddBot.classList.toggle("hidden", !state.isHost);
+      el.btnAddBot.disabled = !(state.isHost && !full);
     }
 
     function renderGamePlayers(p) {
@@ -2015,6 +2023,7 @@
     });
     el.btnReady.addEventListener("click", () =>
       send("set_ready", { ready: !myReady() }));
+    el.btnAddBot.addEventListener("click", () => send("add_bot", {}));
     el.btnStart.addEventListener("click", () => send("start_game", {}));
     el.btnLeave.addEventListener("click", leaveRoom);
     el.btnLeaveGame.addEventListener("click", leaveRoom);

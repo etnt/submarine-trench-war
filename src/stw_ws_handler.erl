@@ -156,6 +156,17 @@ dispatch(<<"start_game">>, _P, Seq, State) ->
         end
     end);
 
+dispatch(<<"add_bot">>, _P, Seq, State) ->
+    with_game(Seq, State, fun(GamePid, PlayerId) ->
+        case stw_game:add_bot(GamePid, PlayerId) of
+            {ok, _BotId} ->
+                {[], State};
+            {error, Code} ->
+                reply(error_msg(Seq, add_bot_error(Code),
+                                <<"Cannot add bot.">>), State)
+        end
+    end);
+
 dispatch(<<"leave_game">>, _P, Seq, State) ->
     with_game(Seq, State, fun(GamePid, PlayerId) ->
         stw_game:leave(GamePid, PlayerId),
@@ -201,6 +212,12 @@ program_error(invalid_register) -> <<"invalid_register">>;
 program_error(not_in_game) -> <<"not_in_game">>;
 program_error(no_program) -> <<"invalid_register">>;
 program_error(_) -> <<"internal_error">>.
+
+%% Map a stw_game add_bot error to a protocol error code.
+add_bot_error(not_host) -> <<"not_host">>;
+add_bot_error(not_lobby) -> <<"not_lobby">>;
+add_bot_error(room_full) -> <<"room_full">>;
+add_bot_error(_) -> <<"internal_error">>.
 
 %% Run Fun with the current game pid + player id, or return not_in_game.
 with_game(Seq, State, Fun) ->

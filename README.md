@@ -43,12 +43,15 @@ Once the server is up:
 
 1. Enter a name. One player **creates** a room (optionally picking one of the
    trench maps) and shares the room code; the others **join** with it.
-2. Everyone clicks **Ready Up**. The host then clicks **Start**.
+2. Everyone clicks **Ready Up**. The host can also click **Add Bot** to seat a
+   computer-controlled opponent — handy for solo play or filling out a match.
+   The host then clicks **Start**.
 3. Program your registers each round and **Lock In** (see below).
 
-Supports **2–4 players** (one per trench spawn corner). Your name and session
-are remembered in the browser, so a refresh or dropped connection reconnects you
-straight back into your match.
+Supports **2–4 players** (one per trench spawn corner), and any empty seats can
+be filled with **bots**, so you can play alone against the computer. Your name
+and session are remembered in the browser, so a refresh or dropped connection
+reconnects you straight back into your match.
 
 ---
 
