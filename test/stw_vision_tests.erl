@@ -13,23 +13,23 @@ own_tile_visible_test() ->
     ?assert(stw_vision:sees(B, S, passive, {5, 5})),
     ?assert(lists:member({5, 5}, stw_vision:visible_tiles(B, S, passive))).
 
-%% The near radius is all-around: a passive sub sees the tile directly
+%% The near radius is all-around: a passive sub sees the tiles directly
 %% behind it even though its cone faces the other way.
 near_radius_all_around_test() ->
     B = board(11, 11, []),
     S = sub(5, 5, <<"E">>, <<"shallow">>),
-    %% one tile west (behind) is within the passive near radius of 1
-    ?assert(stw_vision:sees(B, S, passive, {4, 5})),
+    %% two tiles west (behind) is within the passive near radius of 2
+    ?assert(stw_vision:sees(B, S, passive, {3, 5})),
     %% one tile north and south too
     ?assert(stw_vision:sees(B, S, passive, {5, 4})),
     ?assert(stw_vision:sees(B, S, passive, {5, 6})).
 
-%% The forward cone reaches the passive cone length (3) but no further.
+%% The forward cone reaches the passive cone length (4) but no further.
 forward_cone_test() ->
     B = board(11, 11, []),
     S = sub(5, 5, <<"E">>, <<"shallow">>),
-    ?assert(stw_vision:sees(B, S, passive, {8, 5})),      %% 3 ahead
-    ?assertNot(stw_vision:sees(B, S, passive, {9, 5})).   %% 4 ahead
+    ?assert(stw_vision:sees(B, S, passive, {9, 5})),      %% 4 ahead
+    ?assertNot(stw_vision:sees(B, S, passive, {10, 5})).  %% 5 ahead
 
 %% A wall between the viewer and a cone tile blocks line of sight, but the
 %% same tile is visible once the wall is gone.
@@ -47,18 +47,18 @@ deep_shortens_cone_test() ->
     B = board(11, 11, []),
     Shallow = sub(5, 5, <<"E">>, <<"shallow">>),
     Deep = sub(5, 5, <<"E">>, <<"deep">>),
-    ?assert(stw_vision:sees(B, Shallow, passive, {8, 5})),   %% 3 ahead
-    ?assertNot(stw_vision:sees(B, Deep, passive, {8, 5})),   %% cone now 2
-    ?assert(stw_vision:sees(B, Deep, passive, {7, 5})).      %% 2 ahead ok
+    ?assert(stw_vision:sees(B, Shallow, passive, {9, 5})),   %% 4 ahead
+    ?assertNot(stw_vision:sees(B, Deep, passive, {9, 5})),   %% cone now 3
+    ?assert(stw_vision:sees(B, Deep, passive, {8, 5})).      %% 3 ahead ok
 
 %% Active sonar has a wider near radius than passive.
 active_wider_near_test() ->
     B = board(11, 11, []),
     S = sub(5, 5, <<"E">>, <<"shallow">>),
-    %% two tiles behind the sub: outside the passive near radius and cone,
-    %% but inside the active near radius of 2
-    ?assertNot(stw_vision:sees(B, S, passive, {3, 5})),
-    ?assert(stw_vision:sees(B, S, active, {3, 5})).
+    %% three tiles behind the sub: outside the passive near radius and cone,
+    %% but inside the active near radius of 3
+    ?assertNot(stw_vision:sees(B, S, passive, {2, 5})),
+    ?assert(stw_vision:sees(B, S, active, {2, 5})).
 
 %% Active sonar also reaches further forward than passive.
 active_longer_cone_test() ->

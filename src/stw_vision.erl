@@ -29,11 +29,11 @@
 -export_type([mode/0]).
 
 %% Immediate all-around radius (Chebyshev distance) by sonar mode.
--define(NEAR_PASSIVE, 1).
--define(NEAR_ACTIVE, 2).
+-define(NEAR_PASSIVE, 2).
+-define(NEAR_ACTIVE, 3).
 %% Forward sonar cone length by sonar mode.
--define(CONE_PASSIVE, 3).
--define(CONE_ACTIVE, 5).
+-define(CONE_PASSIVE, 4).
+-define(CONE_ACTIVE, 6).
 %% A Deep submarine's cone is shortened by this much.
 -define(DEEP_PENALTY, 1).
 
