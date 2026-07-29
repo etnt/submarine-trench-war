@@ -1,7 +1,5 @@
 # Submarine Trench War
-
-> A real-time multiplayer submarine game of **programmed movement**, fog of war,
-> and information warfare in the crushing dark of a deep-sea trench.
+> A real-time multiplayer submarine game of **programmed movement**
 
 Submarine Trench War is a turn-based tactics game built around **programmed
 movement**: you don't drive your submarine directly. Instead, each round you

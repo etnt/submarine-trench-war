@@ -25,6 +25,8 @@
 -ifdef(TEST).
 %% Pure objective helpers exposed for unit testing.
 -export([resolve_data/3, extraction_path/1]).
+%% Dealing helper exposed so tests can verify the guaranteed Ahead card.
+-export([ensure_ahead/1]).
 %% Config helpers exposed so tests can verify env overrides.
 -export([base_hand/0, min_hand/0, win_data/0, ping_timer_ms/0,
          collapse_interval/0]).
@@ -626,8 +628,29 @@ deal_hands(S) ->
 
 deal_one_hand(Round, Hull) ->
     N = hand_size(Hull),
-    [#{<<"id">> => card_id(Round, I), <<"kind">> => random_kind()}
-     || I <- lists:seq(1, N)].
+    Hand = [#{<<"id">> => card_id(Round, I), <<"kind">> => random_kind()}
+            || I <- lists:seq(1, N)],
+    ensure_ahead(Hand).
+
+%% Guarantee at least one forward-movement card in the hand: if the random
+%% draw produced none, overwrite a random slot's kind with an Ahead card so
+%% a player is never stranded without a way to advance. The card ids (and
+%% thus hand size) are untouched.
+ensure_ahead(Hand) ->
+    Ahead = stw_engine:ahead_cards(),
+    HasAhead = lists:any(fun(#{<<"kind">> := K}) -> lists:member(K, Ahead) end,
+                         Hand),
+    case HasAhead of
+        true ->
+            Hand;
+        false ->
+            Idx = rand:uniform(length(Hand)),
+            Card = pick(Ahead),
+            [case J =:= Idx of
+                 true -> C#{<<"kind">> => Card};
+                 false -> C
+             end || {J, C} <- lists:zip(lists:seq(1, length(Hand)), Hand)]
+    end.
 
 %% Full hull => full hand; each point of damage removes one card, never
 %% dropping below the register count (a damaged nav-computer offers less).

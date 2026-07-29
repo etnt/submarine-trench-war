@@ -325,6 +325,29 @@ map_collapse_after_interval() ->
 
 %% --- pure objective-logic tests ---------------------------------------
 
+%% A hand that already contains an Ahead card is returned unchanged.
+ensure_ahead_keeps_existing_test() ->
+    Hand = [#{<<"id">> => <<"c1">>, <<"kind">> => <<"torpedo">>},
+            #{<<"id">> => <<"c2">>, <<"kind">> => <<"ahead_flank">>},
+            #{<<"id">> => <<"c3">>, <<"kind">> => <<"dive">>}],
+    ?assertEqual(Hand, stw_game:ensure_ahead(Hand)).
+
+%% A hand with no forward-movement card gets exactly one slot rewritten to
+%% an Ahead card; ids and hand size are preserved.
+ensure_ahead_injects_when_missing_test() ->
+    Hand = [#{<<"id">> => <<"c1">>, <<"kind">> => <<"torpedo">>},
+            #{<<"id">> => <<"c2">>, <<"kind">> => <<"port_bank">>},
+            #{<<"id">> => <<"c3">>, <<"kind">> => <<"dive">>}],
+    Fixed = stw_game:ensure_ahead(Hand),
+    ?assertEqual(length(Hand), length(Fixed)),
+    ?assertEqual([<<"c1">>, <<"c2">>, <<"c3">>],
+                 [maps:get(<<"id">>, C) || C <- Fixed]),
+    AheadCount = length([C || C <- Fixed,
+                              lists:member(maps:get(<<"kind">>, C),
+                                           [<<"ahead_standard">>,
+                                            <<"ahead_flank">>])]),
+    ?assertEqual(1, AheadCount).
+
 %% A submarine ending its round on a data node downloads it: its data count
 %% rises and the node is removed from the board.
 collect_data_node_test() ->
