@@ -23,9 +23,33 @@ jobs:
       - name: Run the test suite
         run: rebar3 eunit
 
-  build:
+  meta:
     runs-on: ubuntu-latest
-    needs: test
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Compute image name and tag
+        id: meta
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="${GITHUB_REF_NAME}"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: [test, meta]
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+            platform: linux/amd64
+          # GitHub provides standard ARM64 runners for public repositories.
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -33,35 +57,58 @@ jobs:
     steps:
       - name: Check out the code
         uses: actions/checkout@v4
+
       - name: Install Podman
         run: |
           sudo apt-get update
           sudo apt-get install --yes podman
           podman --version
 
-      # Lowercase the owner/repo so it is a valid GHCR image name even if
-      # the GitHub account has uppercase letters.
-      - name: Compute image name and tag
-        id: meta
+      - name: Log in to GHCR
         run: |
-          image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          version="${GITHUB_REF_NAME}"          # e.g. v0.1.0
-          echo "image=${image}" >> "$GITHUB_OUTPUT"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push ${{ matrix.platform }} image
+        run: |
+          image="${{ needs.meta.outputs.image }}"
+          version="${{ needs.meta.outputs.version }}"
+          arch="${{ matrix.arch }}"
+          platform="${{ matrix.platform }}"
+          tag="${image}:${version}-${arch}"
+          podman build --platform "$platform" --tag "$tag" .
+          podman push "$tag"
+
+  publish:
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes podman
+          podman --version
 
       - name: Log in to GHCR
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" \
             | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build image
+      - name: Publish version and latest manifests
         run: |
-          podman build \
-            --tag "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}" \
-            --tag "${{ steps.meta.outputs.image }}:latest" \
-            .
-
-      - name: Push image
-        run: |
-          podman push "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}"
-          podman push "${{ steps.meta.outputs.image }}:latest"
+          image="${{ needs.meta.outputs.image }}"
+          version="${{ needs.meta.outputs.version }}"
+          manifest="${image}:${version}"
+          podman manifest create "$manifest"
+          podman manifest add "$manifest" \
+            "docker://${image}:${version}-amd64"
+          podman manifest add "$manifest" \
+            "docker://${image}:${version}-arm64"
+          podman manifest push --all \
+            "$manifest" "docker://${image}:${version}"
+          podman manifest push --all \
+            "$manifest" "docker://${image}:latest"

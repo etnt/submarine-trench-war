@@ -73,7 +73,9 @@ make container-run
 
 The container publishes port `8080`. For Docker, run `make container-build CONTAINER=docker` and `make container-run CONTAINER=docker`.
 
-Pushing a `v*` tag starts the [container image workflow](.github/workflows/container.yml). It builds the image with Podman and publishes it to `ghcr.io/<owner>/submarine-trench-war`, with the version and `latest` tags.
+Pushing a `v*` tag starts the [container image workflow](.github/workflows/container.yml). It builds native `linux/amd64` and `linux/arm64` images with Podman, then publishes a manifest under the version and `latest` tags. Podman selects the matching architecture when it pulls the image.
+
+GitHub provides the standard `ubuntu-24.04-arm` runner only for public repositories. Use an ARM64 larger runner if the repository remains private.
 
 ```sh
 git tag v0.1.0
