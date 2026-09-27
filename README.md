@@ -4,7 +4,37 @@ This is a turn-based multiplayer submarine game. Each round, plan up to five act
 
 The board is a grid of tiles. A tile is one square. Sonar shows nearby tiles and submarines.
 
-If you want to build or start the server, read the [developer guide](DEVELOPERS.md).
+## Quick start
+
+To run the server directly on your computer, install [Erlang/OTP 28 or newer](https://www.erlang.org/downloads) and [rebar3 3.24 or newer](https://rebar3.org/docs/getting-started/). Clone this repository or download its source. From the project directory, run this command to fetch the Cowboy dependency and compile the server:
+
+```sh
+rebar3 compile
+```
+
+Start the server:
+
+```sh
+rebar3 shell
+```
+
+Open [http://localhost:8080](http://localhost:8080) in a browser. Stop the server by pressing Ctrl+C twice in the terminal.
+
+You can also run the server in a container. Install Podman or Docker to use this route. The Makefile uses Podman by default. The run command publishes port `8080` on your computer to port `8080` in the container:
+
+```sh
+make container-build
+make container-run
+```
+
+To use Docker, add `CONTAINER=docker` to each command:
+
+```sh
+make container-build CONTAINER=docker
+make container-run CONTAINER=docker
+```
+
+Stop the container by pressing Ctrl+C in the terminal.
 
 ## Start a match
 
