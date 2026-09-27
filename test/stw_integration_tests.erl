@@ -35,9 +35,11 @@ hardening_test_() ->
           {"stale ping timeout in lobby is a no-op", fun stale_timeout_is_safe/0},
           {"partial programs survive a timeout", fun timeout_preserves_partial/0},
           {"only the host can start", fun only_host_starts/0},
+          {"host cannot restart a match", fun host_cannot_restart/0},
           {"cannot act before the match starts", fun no_act_before_start/0},
           {"forged and malformed programs are rejected", fun rejects_bad_programs/0},
           {"outsiders cannot program a room", fun outsider_cannot_program/0},
+          {"locked programs cannot be replaced", fun locked_program_cannot_change/0},
           {"cannot lock without a program", fun no_lock_without_program/0} ]
     end}.
 
@@ -192,6 +194,12 @@ only_host_starts() ->
     flush(),
     {GamePid, [_Host, Crew]} = lobby_game(1),
     ?assertEqual({error, not_host}, stw_game:start_game(GamePid, Crew)).
+host_cannot_restart() ->
+    flush(),
+    {GamePid, [Host, Crew]} = started_game(1),
+    ?assertEqual({error, not_lobby}, stw_game:start_game(GamePid, Host)),
+    ?assertEqual({error, not_host}, stw_game:start_game(GamePid, Crew)).
+
 
 no_act_before_start() ->
     flush(),
@@ -219,6 +227,16 @@ rejects_bad_programs() ->
     %% a legitimate 5-card program from the real hand is accepted
     ?assertEqual(ok,
                  stw_game:program_registers(GamePid, P1, lists:sublist(Ids, 5))).
+locked_program_cannot_change() ->
+    flush(),
+    {GamePid, [P1 | _]} = started_game(1),
+    Ids = hand_ids(deal_for(P1)),
+    Original = lists:sublist(Ids, 5),
+    Replacement = lists:sublist(lists:nthtail(1, Ids), 5),
+    ok = stw_game:program_registers(GamePid, P1, Original),
+    ok = stw_game:lock_registers(GamePid, P1),
+    ?assertEqual({error, already_locked},
+                 stw_game:program_registers(GamePid, P1, Replacement)).
 
 %% A player who is not seated in a match cannot program it.
 outsider_cannot_program() ->

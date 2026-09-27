@@ -313,17 +313,17 @@
   </header>
 
   <main>
-    <div id="helpModal" class="modal-overlay hidden">
+    <div id="helpModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
       <div class="modal">
         <div class="modal-head">
-          <h2>How to Play</h2>
+          <h2 id="helpTitle">How to Play</h2>
           <button id="btnHelpClose">Close</button>
         </div>
         <div class="modal-body" id="helpBody"></div>
       </div>
     </div>
 
-    <div id="gameOverModal" class="modal-overlay hidden">
+    <div id="gameOverModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="gameOverTitle">
       <div class="modal">
         <div class="modal-head">
           <h2 id="gameOverTitle">Match Over</h2>
@@ -350,7 +350,7 @@
         <input id="nameInput" type="text" placeholder="Nautilus" maxlength="20" />
       </div>
       <div class="controls" style="margin-bottom: 14px;">
-        <button id="btnCreate" class="primary">Create Room</button>
+        <button id="btnCreate" class="primary" disabled>Create Room</button>
       </div>
       <div class="field">
         <label for="mapSelect">Map</label>
@@ -364,10 +364,10 @@
         <div class="controls">
           <input id="roomInput" type="text" placeholder="REEF12" maxlength="6"
                  style="text-transform: uppercase;" />
-          <button id="btnJoin">Join Room</button>
+          <button id="btnJoin" disabled>Join Room</button>
         </div>
       </div>
-      <div class="toast" id="homeToast"></div>
+      <div class="toast" id="homeToast" role="status" aria-live="polite"></div>
     </div>
 
     <!-- LOBBY: room + players -->
@@ -384,7 +384,7 @@
         <button id="btnStart" class="primary hidden">Dive! (Start)</button>
         <button id="btnLeave">Leave</button>
       </div>
-      <div class="toast" id="lobbyToast"></div>
+      <div class="toast" id="lobbyToast" role="status" aria-live="polite"></div>
     </div>
 
     <!-- GAME: board + fleet -->
@@ -394,7 +394,7 @@
         <button id="btnSonar" class="sonar-btn" title="Toggle active/passive sonar">Sonar: Passive</button>
         <button id="btnSound" class="sound-btn" title="Toggle sound effects" aria-pressed="false">🔈 Sound</button>
       </h2>
-      <canvas id="board" width="600" height="360"></canvas>
+      <canvas id="board" width="600" height="360" role="img" aria-label="Trench map showing visible terrain, objectives, and submarines."></canvas>
       <div id="mapTip" class="map-tip hidden"></div>
 
       <!-- Register programming -->
@@ -412,7 +412,7 @@
           <button id="btnHelp" title="How to play">? Help</button>
           <button id="btnClear">Clear</button>
           <button id="btnLock" class="primary" disabled>Lock In</button>
-          <span id="progToast" class="subtitle" style="flex:1"></span>
+          <span id="progToast" class="subtitle" style="flex:1" role="status" aria-live="polite"></span>
         </div>
       </div>
 
@@ -439,6 +439,7 @@
       ws: null,
       seq: 0,
       connected: false,
+      identityReady: false,
       playerId: null,
       token: localStorage.getItem(LS_TOKEN) || null,
       roomCode: null,
@@ -634,6 +635,13 @@
       state.connected = connected;
       el.dot.classList.toggle("connected", connected);
       el.statusText.textContent = connected ? "Connected" : "Disconnected";
+      updateHomeControls();
+    }
+
+    function updateHomeControls() {
+      const ready = state.connected && state.identityReady;
+      el.btnCreate.disabled = !ready;
+      el.btnJoin.disabled = !ready;
     }
 
     function connect() {
@@ -665,6 +673,7 @@
       ws.onerror = () => log("err", "WebSocket error.");
       ws.onclose = () => {
         clearWatchdog();
+        state.identityReady = false;
         setConnected(false);
         state.ws = null;
         log("sys", "Disconnected. Reconnecting in 1s ...");
@@ -715,6 +724,8 @@
       const prevId = state.playerId;
       state.playerId = p.player_id;
       state.token = p.session_token;
+      state.identityReady = true;
+      updateHomeControls();
       localStorage.setItem(LS_TOKEN, state.token);
       updateWhoami();
       log("sys", `Welcome. player_id=${p.player_id}`);
@@ -771,7 +782,7 @@
       el.gameOverModal.classList.add("hidden");
       if (p.board) state.board = p.board;
       state.collapses = [];
-      if (p.submarines) state.subs = p.submarines;
+      state.roster = {};
       // game_started is unfogged: record every player's colour + name so we
       // can label fogged sonar contacts consistently for the rest of the game.
       (p.submarines || []).forEach((s) => {
@@ -1039,6 +1050,7 @@
         esc(reasonText) + '.</p>' +
         '<div class="go-standings">' + rows + '</div>';
       el.gameOverModal.classList.remove("hidden");
+      el.btnGameOverClose.focus();
     }
 
     function onError(p) {
@@ -1051,9 +1063,13 @@
         setTimeout(() => { el.homeToast.textContent = ""; }, 4000);
         return;
       }
-      const target = state.view === "home" ? el.homeToast : el.lobbyToast;
-      target.textContent = friendlyError(p.code, p.message);
-      setTimeout(() => { target.textContent = ""; }, 4000);
+      const target = state.view === "home" ? el.homeToast
+        : state.view === "lobby" ? el.lobbyToast : el.progToast;
+      const message = friendlyError(p.code, p.message);
+      target.textContent = message;
+      setTimeout(() => {
+        if (target.textContent === message) target.textContent = "";
+      }, 4000);
     }
 
     // Turn a terse server error code into player-facing guidance.
@@ -1070,7 +1086,7 @@
         protocol_version_unsupported:
           "This client is out of date. Refresh the page to update.",
         bad_json: "The server didn't understand that request.",
-        internal_error: "The server hit a snag. Please try again.",
+        not_lobby: "That match has already started.",
       };
       return map[code] || message || code;
     }
@@ -2030,14 +2046,24 @@
     }
 
     // --- actions --------------------------------------------------------
+    function identifyForRoom() {
+      if (!state.connected || !state.identityReady) return false;
+      const typedName = el.nameInput.value.trim();
+      const name = typedName || localStorage.getItem(LS_NAME) || "Captain";
+      if (typedName) localStorage.setItem(LS_NAME, typedName);
+      send("hello", { protocol_version: 1, display_name: name,
+                      session_token: state.token || undefined });
+      return true;
+    }
+
     el.btnCreate.addEventListener("click", () => {
-      persistName();
+      if (!identifyForRoom()) return;
       send("create_game", { max_players: 4, map_id: el.mapSelect.value });
     });
     el.btnJoin.addEventListener("click", () => {
-      persistName();
       const code = el.roomInput.value.trim().toUpperCase();
       if (!code) { el.homeToast.textContent = "Enter a room code."; return; }
+      if (!identifyForRoom()) return;
       send("join_game", { room_code: code });
     });
     el.btnReady.addEventListener("click", () =>
@@ -2107,12 +2133,25 @@
       const cell = cellFromEvent(ev);
       const tip = cell ? tipForCell(cell) : null;
       if (!tip) { el.mapTip.classList.add("hidden"); return; }
-      el.mapTip.innerHTML =
-        `<div class="tip-title">${tip.title}</div>` +
-        (tip.sub ? `<div class="tip-sub">${tip.sub}</div>` : "");
+      const title = document.createElement("div");
+      title.className = "tip-title";
+      title.textContent = tip.title;
+      el.mapTip.replaceChildren(title);
+      if (tip.sub) {
+        const detail = document.createElement("div");
+        detail.className = "tip-sub";
+        detail.textContent = tip.sub;
+        el.mapTip.appendChild(detail);
+      }
       el.mapTip.classList.remove("hidden");
-      el.mapTip.style.left = (ev.clientX + 14) + "px";
-      el.mapTip.style.top = (ev.clientY + 14) + "px";
+      const bounds = el.mapTip.getBoundingClientRect();
+      const margin = 8;
+      const left = Math.max(margin, Math.min(
+        ev.clientX + 14, window.innerWidth - bounds.width - margin));
+      const top = Math.max(margin, Math.min(
+        ev.clientY + 14, window.innerHeight - bounds.height - margin));
+      el.mapTip.style.left = left + "px";
+      el.mapTip.style.top = top + "px";
     }
 
     el.canvas.addEventListener("mousemove", showMapTip);
@@ -2221,8 +2260,15 @@
       el.helpBody.dataset.built = "1";
     }
 
-    function openHelp() { buildHelp(); el.helpModal.classList.remove("hidden"); }
-    function closeHelp() { el.helpModal.classList.add("hidden"); }
+    function openHelp() {
+      buildHelp();
+      el.helpModal.classList.remove("hidden");
+      el.btnHelpClose.focus();
+    }
+    function closeHelp() {
+      el.helpModal.classList.add("hidden");
+      el.btnHelp.focus();
+    }
 
     el.btnHelp.addEventListener("click", openHelp);
     el.btnHelpClose.addEventListener("click", closeHelp);
@@ -2230,13 +2276,43 @@
       if (ev.target === el.helpModal) closeHelp();
     });
 
-    function closeGameOver() { el.gameOverModal.classList.add("hidden"); }
+    function closeGameOver() {
+      el.gameOverModal.classList.add("hidden");
+      el.btnLeaveGame.focus();
+    }
     el.btnGameOverClose.addEventListener("click", closeGameOver);
     el.gameOverModal.addEventListener("click", (ev) => {
       if (ev.target === el.gameOverModal) closeGameOver();
     });
+    function keepModalFocus(ev, modal) {
+      if (ev.key !== "Tab") return;
+      const controls = Array.from(modal.querySelectorAll(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+        'textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'));
+      if (controls.length === 0) { ev.preventDefault(); return; }
+      const first = controls[0], last = controls[controls.length - 1];
+      if (!modal.contains(document.activeElement) ||
+          (ev.shiftKey && document.activeElement === first)) {
+        ev.preventDefault();
+        (ev.shiftKey ? last : first).focus();
+      } else if (!ev.shiftKey && document.activeElement === last) {
+        ev.preventDefault();
+        first.focus();
+      }
+    }
+
     document.addEventListener("keydown", (ev) => {
-      if (ev.key === "Escape" && !el.helpModal.classList.contains("hidden")) closeHelp();
+      const helpOpen = !el.helpModal.classList.contains("hidden");
+      const gameOverOpen = !el.gameOverModal.classList.contains("hidden");
+      const modal = helpOpen ? el.helpModal
+        : gameOverOpen ? el.gameOverModal : null;
+      if (!modal) return;
+      if (ev.key === "Escape") {
+        if (helpOpen) closeHelp();
+        else closeGameOver();
+        return;
+      }
+      keepModalFocus(ev, modal);
     });
 
 
@@ -2260,10 +2336,6 @@
       setView("home");
     }
 
-    function persistName() {
-      const name = el.nameInput.value.trim();
-      if (name) localStorage.setItem(LS_NAME, name);
-    }
 
     // --- init -----------------------------------------------------------
     el.nameInput.value = localStorage.getItem(LS_NAME) || "";

@@ -163,7 +163,8 @@ Toggle ready state in the lobby.
 ```
 
 ### `start_game`
-Host-only request to start the match early.
+Host-only request to start a match while the room is in the lobby. A repeated
+request after the match starts returns `not_lobby` and does not reset the match.
 
 ### `add_bot`
 Host-only request to add a computer-controlled opponent to the room. Empty
@@ -183,10 +184,10 @@ Errors: `not_host` if the sender is not the host; `not_lobby` if the match has
 already started; `room_full` if the room is at `max_players`.
 
 ### `program_registers`
-Working selection of 5 ordered cards for the round, given as **card IDs**
-drawn from this round's dealt hand (see `deal_hand`). May be sent multiple
-times before locking (the server keeps the latest). The 5 IDs must be distinct
-and all present in the current hand.
+Working selection of up to 5 ordered cards for the round, given as **card IDs**
+drawn from this round's dealt hand (see `deal_hand`). May be sent multiple times
+before locking (the server keeps the latest). IDs must be distinct and present
+in the player's current hand. Unfilled registers hold position.
 
 ```json
 {
@@ -197,8 +198,9 @@ and all present in the current hand.
 }
 ```
 
-Errors: `invalid_register` if the list is not exactly 5 distinct IDs, or any ID
-is not in the player's hand; `not_in_game` if the sender has no submarine.
+Errors: `invalid_register` if the list has more than 5 cards, duplicate IDs, or
+an ID not in the player's hand; `already_locked` if the player has locked this
+round; `not_in_game` if the sender has no submarine.
 
 ### `lock_registers`
 Binding lock of the most recently programmed registers. Takes no payload — the

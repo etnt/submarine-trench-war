@@ -134,7 +134,7 @@ leave(GamePid, PlayerId) ->
 set_ready(GamePid, PlayerId, Ready) ->
     gen_server:call(GamePid, {set_ready, PlayerId, Ready}).
 
--spec start_game(pid(), binary()) -> ok | {error, not_host}.
+-spec start_game(pid(), binary()) -> ok | {error, not_host | not_lobby}.
 start_game(GamePid, PlayerId) ->
     gen_server:call(GamePid, {start_game, PlayerId}).
 
@@ -147,7 +147,7 @@ start_game(GamePid, PlayerId) ->
 add_bot(GamePid, RequesterId) ->
     gen_server:call(GamePid, {add_bot, RequesterId}).
 
-%% @doc Submit an ordered list of 5 card IDs (drawn from this round's dealt
+%% @doc Submit up to 5 ordered card IDs (drawn from this round's dealt
 %% hand) to program into the registers.
 -spec program_registers(pid(), binary(), [binary()]) ->
     ok | {error, atom()}.
@@ -221,6 +221,12 @@ handle_call({reconnect, PlayerId, WsPid}, _From, S) ->
             {reply, {error, not_in_room}, S}
     end;
 
+handle_call({start_game, PlayerId}, _From,
+            #state{phase = Phase, host_id = Host} = S) when Phase =/= lobby ->
+    case PlayerId =:= Host of
+        true -> {reply, {error, not_lobby}, S};
+        false -> {reply, {error, not_host}, S}
+    end;
 handle_call({start_game, PlayerId}, _From, S) ->
     case PlayerId =:= S#state.host_id of
         true ->
@@ -261,11 +267,16 @@ handle_call({add_bot, RequesterId}, _From, S) ->
             end
     end;
 handle_call({program, PlayerId, Cards}, _From, S) ->
-    case validate_program(PlayerId, Cards, S) of
-        {ok, Kinds} ->
-            {reply, ok, do_program(PlayerId, Kinds, Cards, S)};
-        {error, _} = Err ->
-            {reply, Err, S}
+    case lists:member(PlayerId, S#state.locked) of
+        true ->
+            {reply, {error, already_locked}, S};
+        false ->
+            case validate_program(PlayerId, Cards, S) of
+                {ok, Kinds} ->
+                    {reply, ok, do_program(PlayerId, Kinds, Cards, S)};
+                {error, _} = Err ->
+                    {reply, Err, S}
+            end
     end;
 handle_call({set_ready, PlayerId, Ready}, _From, S) ->
     case maps:find(PlayerId, S#state.players) of

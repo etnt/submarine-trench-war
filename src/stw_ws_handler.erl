@@ -152,7 +152,10 @@ dispatch(<<"start_game">>, _P, Seq, State) ->
                 {[], State};
             {error, not_host} ->
                 reply(error_msg(Seq, <<"not_host">>,
-                                <<"Only the host can start the game.">>), State)
+                                <<"Only the host can start the game.">>), State);
+            {error, not_lobby} ->
+                reply(error_msg(Seq, <<"not_lobby">>,
+                                <<"The game has already started.">>), State)
         end
     end);
 
@@ -211,6 +214,7 @@ dispatch(_Type, _P, Seq, State) ->
 program_error(invalid_register) -> <<"invalid_register">>;
 program_error(not_in_game) -> <<"not_in_game">>;
 program_error(no_program) -> <<"invalid_register">>;
+program_error(already_locked) -> <<"already_locked">>;
 program_error(_) -> <<"internal_error">>.
 
 %% Map a stw_game add_bot error to a protocol error code.
