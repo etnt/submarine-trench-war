@@ -4,6 +4,12 @@ This is a turn-based multiplayer submarine game. Each round, plan up to five act
 
 The board is a grid of tiles. A tile is one square. Sonar shows nearby tiles and submarines.
 
+## Screenshots
+
+<a href="screenshots/start.jpeg"><img src="screenshots/start.jpeg" alt="Start screenshot" width="19%"></a>
+<a href="screenshots/create-room-with-bot.jpeg"><img src="screenshots/create-room-with-bot.jpeg" alt="Create room screenshot" width="19%"></a>
+<a href="screenshots/playing.jpeg"><img src="screenshots/playing.jpeg" alt="Playing screenshot" width="19%"></a>
+
 ## Quick start
 
 To run the server directly on your computer, install [Erlang/OTP 28 or newer](https://www.erlang.org/downloads) and [rebar3 3.24 or newer](https://rebar3.org/docs/getting-started/). Clone this repository or download its source. From the project directory, run this command to fetch the Cowboy dependency and compile the server:
