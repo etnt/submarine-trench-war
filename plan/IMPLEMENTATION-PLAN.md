@@ -104,6 +104,7 @@ Goal: card economy and the multiplayer pacing mechanic.
 
 * [x] Deal 7-9 cards per turn; players pick 5 to program.
 * [x] Enforce hand size reduction based on hull damage (min 5).
+* [x] Guarantee each hand at least one Ahead and one Port/Starboard Bank card.
 * [x] Implement the 30-second Ping Timer once the first player locks in.
 * [x] Auto-fill unlocked registers with random chaotic cards on timeout.
 * [x] Client: hand display, draft selection, and countdown timer UI.

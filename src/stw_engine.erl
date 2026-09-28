@@ -33,7 +33,7 @@
 -module(stw_engine).
 
 -export([resolve_round/3, card_kinds/0, nav_cards/0, tactical_cards/0,
-         ahead_cards/0,
+         ahead_cards/0, turn_cards/0,
          valid_card/1]).
 
 -define(REGISTERS, 5).
@@ -62,6 +62,11 @@ nav_cards() ->
 -spec ahead_cards() -> [binary()].
 ahead_cards() ->
     [<<"ahead_standard">>, <<"ahead_flank">>].
+
+%% @doc Turning cards. Every dealt hand is guaranteed to contain at least one.
+-spec turn_cards() -> [binary()].
+turn_cards() ->
+    [<<"port_bank">>, <<"starboard_bank">>].
 
 %% @doc Tactical cards: the combat half of the deck.
 -spec tactical_cards() -> [binary()].

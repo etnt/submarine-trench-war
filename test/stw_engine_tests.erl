@@ -49,6 +49,13 @@ events_of(Phases, Type) ->
 
 %% --- movement ---------------------------------------------------------
 
+turn_cards_test() ->
+    TurnCards = stw_engine:turn_cards(),
+    ?assertEqual([<<"port_bank">>, <<"starboard_bank">>], TurnCards),
+    ?assert(lists:all(
+              fun(Kind) -> lists:member(Kind, stw_engine:nav_cards()) end,
+              TurnCards)).
+
 forward_test() ->
     B = open_board(8, 6),
     Subs = #{<<"a">> => sub(2, 2, <<"E">>)},

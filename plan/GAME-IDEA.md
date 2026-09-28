@@ -63,12 +63,14 @@ multiplayer tension:
 
 ### Card Drafting
 
-Each turn, players are dealt 7-9 navigation cards and must pick 5 to
-program into their registers. This gives agency while preserving chaos.
+Each turn, players are dealt 7-9 cards and pick 5 to program into their
+registers. Every hand includes at least one Ahead card and one Port or
+Starboard Bank card. The remaining cards are drawn randomly, preserving agency
+while keeping each hand playable.
 
 Damaged systems reduce hand size: taking hull damage means fewer cards
-dealt next turn (down to a minimum of 5 = no choice). This creates a
-thematic death spiral — a damaged nav-computer offers fewer options.
+dealt next turn (down to a minimum of 5). Every hand still includes the two
+guaranteed movement options.
 
 ### Navigation Cards
 

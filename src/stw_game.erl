@@ -26,8 +26,8 @@
 -ifdef(TEST).
 %% Pure objective helpers exposed for unit testing.
 -export([resolve_data/3, extraction_path/1]).
-%% Dealing helper exposed so tests can verify the guaranteed Ahead card.
--export([ensure_ahead/1]).
+%% Dealing helper exposed so tests can verify the guaranteed movement cards.
+-export([ensure_movement/1]).
 %% Config helpers exposed so tests can verify env overrides.
 -export([base_hand/0, min_hand/0, win_data/0, ping_timer_ms/0,
          collapse_interval/0]).
@@ -899,27 +899,52 @@ deal_one_hand(Round, Hull) ->
     N = hand_size(Hull),
     Hand = [#{<<"id">> => card_id(Round, I), <<"kind">> => random_kind()}
             || I <- lists:seq(1, N)],
-    ensure_ahead(Hand).
+    ensure_movement(Hand).
 
-%% Guarantee at least one forward-movement card in the hand: if the random
-%% draw produced none, overwrite a random slot's kind with an Ahead card so
-%% a player is never stranded without a way to advance. The card ids (and
-%% thus hand size) are untouched.
-ensure_ahead(Hand) ->
+%% Guarantee at least one forward-movement card and one turning card. When a
+%% category is missing, replace a random card but preserve one card from any
+%% category already present; when both are missing, use two distinct slots.
+%% Card ids and hand size are unchanged.
+ensure_movement(Hand) ->
     Ahead = stw_engine:ahead_cards(),
-    HasAhead = lists:any(fun(#{<<"kind">> := K}) -> lists:member(K, Ahead) end,
-                         Hand),
-    case HasAhead of
-        true ->
+    Turns = stw_engine:turn_cards(),
+    HasAhead = has_card_group(Hand, Ahead),
+    HasTurn = has_card_group(Hand, Turns),
+    case {HasAhead, HasTurn} of
+        {true, true} ->
             Hand;
-        false ->
-            Idx = rand:uniform(length(Hand)),
-            Card = pick(Ahead),
-            [case J =:= Idx of
-                 true -> C#{<<"kind">> => Card};
-                 false -> C
-             end || {J, C} <- lists:zip(lists:seq(1, length(Hand)), Hand)]
+        {false, true} ->
+            replace_random_kind(Hand, Ahead, Turns);
+        {true, false} ->
+            replace_random_kind(Hand, Turns, Ahead);
+        {false, false} ->
+            AheadIdx = rand:uniform(length(Hand)),
+            TurnIdx = pick([I || I <- lists:seq(1, length(Hand)),
+                                 I =/= AheadIdx]),
+            Hand1 = replace_kind(Hand, AheadIdx, pick(Ahead)),
+            replace_kind(Hand1, TurnIdx, pick(Turns))
     end.
+
+has_card_group(Hand, Kinds) ->
+    lists:any(fun(#{<<"kind">> := Kind}) -> lists:member(Kind, Kinds) end,
+              Hand).
+
+replace_random_kind(Hand, Kinds, ProtectedKinds) ->
+    Protected = [I || {I, #{<<"kind">> := Kind}} <-
+                             lists:zip(lists:seq(1, length(Hand)), Hand),
+                       lists:member(Kind, ProtectedKinds)],
+    ProtectedIdx = case Protected of
+                       [First | _] -> First;
+                       [] -> 0
+                   end,
+    Candidates = [I || I <- lists:seq(1, length(Hand)), I =/= ProtectedIdx],
+    replace_kind(Hand, pick(Candidates), pick(Kinds)).
+
+replace_kind(Hand, Idx, Kind) ->
+    [case I =:= Idx of
+         true -> Card#{<<"kind">> => Kind};
+         false -> Card
+     end || {I, Card} <- lists:zip(lists:seq(1, length(Hand)), Hand)].
 
 %% Full hull => full hand; each point of damage removes one card, never
 %% dropping below the register count (a damaged nav-computer offers less).

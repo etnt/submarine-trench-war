@@ -56,7 +56,7 @@ Your browser saves your name and session. If you reload the page or lose the con
 
 Each round has five registers. A register is one ordered action slot.
 
-1. Draw a hand. A hand is the set of cards you can use this round.
+1. Draw a hand. A hand is the set of cards you can use this round. Every hand includes at least one Ahead card and at least one Port or Starboard Bank card.
 2. Place up to five cards in the registers, in the order you want to use them. The dotted path shows your planned route. It does not include actions by other submarines.
 3. Select Lock In to submit your plan. When the first player locks, a 30-second timer starts for the other players. If the timer ends, the game fills empty registers with random cards.
 4. The game resolves each register. All submarines act at the same time. The game then resolves collisions, weapons, currents, and hazards.
